@@ -4,41 +4,37 @@ _Dernière mise à jour : 2026-09-18_
 
 ## Phase en cours
 
-Phase 0 — Initialisation du dépôt (finalisation en cours)
+Phase 1 — Modèle de données et entrée DataFrame (implémentée, à valider en CI)
 
 ## Ce qui est fait
 
-- Dépôt GitHub créé (public) et cloné en local :
-  https://github.com/leonardgst/DataSonda
-- Squelette du package en place : `pyproject.toml` (uv + hatchling),
-  licence MIT, structure `src/datasonde/`, `tests/`, CI GitHub Actions
-- Bug résolu : fichiers créés via PowerShell `Set-Content -Encoding utf8`
-  ajoutaient un BOM UTF-8, cassait le parsing TOML par hatchling → corrigé
-  avec `[System.IO.File]::WriteAllText(..., UTF8Encoding($false))`
-- Environnement de travail mis en place : Claude Code (VS Code) pour le
-  développement direct sur le repo local, cette conversation pour les
-  décisions d'architecture et l'apprentissage
+- Phase 0 terminée : dépôt GitHub public, squelette uv + hatchling, licence
+  MIT, `src/datasonde/`, `tests/`, CI GitHub Actions, `CLAUDE.md` + `docs/`
+- Phase 1 : `models.py` (`ColumnInfo`, `DatasetMetadata`, dataclasses frozen
+  avec `to_dict()`), `metadata.py` (`validate_dataframe`, `describe_dataframe`),
+  `tests/test_metadata.py` (9 tests). `pandas-stubs` ajouté en dépendance dev
+  (requis par `mypy --strict`)
+- Vérifications locales vertes : pytest (10 tests), ruff, mypy
 
 ## En cours / à vérifier
 
-- CI : dernière exécution à reconfirmer après correction du bug BOM
-  (`tests/test_import.py` renvoyait "collected 0 items" — cause probable :
-  fichier vide ou mal poussé, diagnostic en cours à la reprise)
+- Confirmer dans l'onglet Actions GitHub que la CI est verte (commit de
+  la Phase 1 pas encore poussé)
 
 ## Décisions actées
 
-- Gestionnaire de projet : `uv`
-- Licence : MIT
-- Backend de build : `hatchling`
-- Layout : `src/datasonde/`
-- Lint/format : `ruff` ; typage : `mypy --strict`
-- Python ≥ 3.11
+- Gestionnaire de projet : `uv` ; licence MIT ; build : `hatchling`
+- Layout : `src/datasonde/` ; Python ≥ 3.11
+- Lint/format : `ruff` ; typage : `mypy --strict` (+ `pandas-stubs`)
+- Modèles de résultat : `dataclass(frozen=True)` de la stdlib (pas de
+  pydantic à ce stade ; migration possible plus tard, limitée à `models.py`)
+- Validation d'entrée : `TypeError` si non-DataFrame ; `ValueError` si aucune
+  colonne ou noms de colonnes dupliqués ; DataFrame sans lignes accepté
 
 ## Prochaine étape
 
-Une fois la CI confirmée verte : **Phase 1 — modèle de données et entrée
-DataFrame** (accepter un `pandas.DataFrame`, le valider, calculer les
-métadonnées générales : nombre de lignes, colonnes, types, mémoire)
+**Phase 2** (à cadrer avec toi avant de coder) : profiling par colonne —
+valeurs manquantes, cardinalité, statistiques descriptives selon le type
 
 ## Pièges connus / notes pour reprise
 

@@ -5,7 +5,18 @@ significative, du plus récent au plus ancien. Ne pas détailler ici le
 "comment" (c'est dans le code et les commits) — se concentrer sur le
 "quoi" et le "pourquoi" des décisions.
 
-## Phase 0 — Initialisation du dépôt (en cours)
+## Phase 1 — Modèle de données et entrée DataFrame
+
+- **2026-09-18** — Entrée DataFrame et métadonnées générales : validation
+  (`validate_dataframe`) et calcul (`describe_dataframe`) → `DatasetMetadata`.
+  - Décision : résultats en `dataclass(frozen=True)` plutôt que pydantic —
+    zéro dépendance, immuable, typage strict natif. Réversible : la
+    migration ne toucherait que `models.py`.
+  - Décision : rejeter les DataFrames sans colonnes et les noms de colonnes
+    dupliqués (ils casseraient l'analyse par colonne) ; accepter 0 ligne.
+  - Ajout de `pandas-stubs` en dépendance dev, nécessaire à `mypy --strict`.
+
+## Phase 0 — Initialisation du dépôt (terminée)
 
 - **2026-09-18** — Mise en place du workflow de continuité entre sessions :
   `CLAUDE.md` (racine, lu automatiquement par Claude Code) + `docs/NEXT_STEPS.md`
