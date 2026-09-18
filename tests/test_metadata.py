@@ -27,6 +27,17 @@ def test_validate_rejects_duplicate_columns() -> None:
         validate_dataframe(df)
 
 
+def test_validate_rejects_names_colliding_after_str_conversion() -> None:
+    df = pd.DataFrame({1: [1], "1": [2]})
+    with pytest.raises(ValueError, match="collide.*'1'"):
+        validate_dataframe(df)
+
+
+def test_validate_accepts_mixed_non_colliding_names() -> None:
+    df = pd.DataFrame({0: [1], "a": [2]})
+    assert validate_dataframe(df) is df
+
+
 def test_describe_shape_and_dtypes() -> None:
     df = pd.DataFrame({"n": [1, 2, 3], "s": ["x", "y", "z"], "f": [0.1, 0.2, 0.3]})
     meta = describe_dataframe(df)

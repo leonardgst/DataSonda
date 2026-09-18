@@ -12,7 +12,8 @@ def validate_dataframe(df: Any) -> pd.DataFrame:
 
     Raises:
         TypeError: if ``df`` is not a ``pandas.DataFrame``.
-        ValueError: if ``df`` has no columns or has duplicate column names.
+        ValueError: if ``df`` has no columns, has duplicate column names, or has
+            distinct names that become identical once converted to ``str``.
     """
     if not isinstance(df, pd.DataFrame):
         raise TypeError(f"Expected a pandas.DataFrame, got {type(df).__name__}")
@@ -21,6 +22,13 @@ def validate_dataframe(df: Any) -> pd.DataFrame:
     duplicates = df.columns[df.columns.duplicated()].unique().tolist()
     if duplicates:
         raise ValueError(f"DataFrame has duplicate column names: {duplicates}")
+    # Labels are distinct for pandas here, so equal string forms are a collision (e.g. 1 and "1").
+    names = pd.Index([str(c) for c in df.columns])
+    collisions = names[names.duplicated()].unique().tolist()
+    if collisions:
+        raise ValueError(
+            f"DataFrame has column names that collide after string conversion: {collisions}"
+        )
     return df
 
 
