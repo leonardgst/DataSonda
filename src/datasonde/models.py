@@ -1,7 +1,19 @@
 """Immutable result containers for DataSonde."""
 
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any
+
+
+class DtypeFamily(StrEnum):
+    """Coarse, pandas-version-independent family of a column dtype."""
+
+    NUMERIC = "numeric"
+    BOOLEAN = "boolean"
+    DATETIME = "datetime"
+    CATEGORICAL = "categorical"
+    TEXT_OR_OBJECT = "text_or_object"
+    OTHER = "other"
 
 
 @dataclass(frozen=True)
