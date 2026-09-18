@@ -20,3 +20,6 @@ htmlcov/
 *.csv
 *.parquet
 !tests/**/*.csv
+
+# Claude Code local settings (per-machine permissions)
+.claude/settings.local.json
