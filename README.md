@@ -33,4 +33,4 @@ uv run mypy src
 
 ## License
 
-MIT â€” see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE).
