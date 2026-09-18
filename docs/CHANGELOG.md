@@ -5,6 +5,56 @@ significative, du plus récent au plus ancien. Ne pas détailler ici le
 "comment" (c'est dans le code et les commits) — se concentrer sur le
 "quoi" et le "pourquoi" des décisions.
 
+## Phase 2 — Profil de base des colonnes
+
+- **2026-09-18** — Pour chaque colonne : famille de dtype, nombre de lignes,
+  valeurs manquantes (nombre, non-manquantes, taux), valeurs distinctes,
+  avertissements. Résultat structuré, immuable et sérialisable en JSON
+  (`DatasetProfile` → `ColumnProfile`), calculé par `profile_dataframe(df)`.
+  Quatre commits : correctif de validation, classification des dtypes,
+  profil de colonne, profil de dataset.
+  - **Changement de feuille de route :** cette phase remplace le chargement
+    CSV, qui était prévu ici. Raison : le profil des valeurs est la matière
+    première des phases suivantes (types, qualité, statistiques) ; le CSV
+    n'est qu'une porte d'entrée de plus. Le CSV est repoussé (phase à fixer
+    lors du prochain cadrage).
+  - Décision : famille de dtype = enum `DtypeFamily` (`numeric`, `boolean`,
+    `datetime`, `categorical`, `text_or_object`, `other`), identique sous
+    pandas 2 et 3. L'ordre des tests fait la classification : booléen avant
+    numérique (`is_numeric_dtype` est vrai pour un booléen), catégoriel avant
+    texte (`is_string_dtype` est vrai pour une Series `category`). On classe
+    le dtype, pas la Series (aucun parcours de valeurs sous pandas 2).
+    Alternative écartée : comparer des chaînes de dtype (`str` vs `object`,
+    `datetime64[us]` vs `[ns]` selon la version de pandas).
+  - Décision : les complexes vont dans `other`. Leurs prédicats pandas disent
+    « numérique », mais ils n'ont pas d'ordre : min, max et médiane n'auraient
+    pas de sens pour les statistiques à venir.
+  - Décision : timedelta, période et intervalle vont aussi dans `other`.
+    Limite connue : un booléen contenant `None` est de dtype `object`, donc
+    `text_or_object`, jusqu'à l'inférence de types (Phase 3).
+  - Décision : valeur manquante = nul au sens pandas (`isna()` : `None`,
+    `NaN`, `pd.NA`, `NaT`). `inf`, `""`, `" "`, `"N/A"`, `"-999"` ne comptent
+    pas ; les chaînes vides auront une métrique distincte plus tard.
+  - Décision : « non calculable » = `None`, jamais NaN ni 0 (`missing_rate`
+    sur 0 ligne ; `n_unique` sur valeurs non hachables, avec l'avertissement
+    `"n_unique not computed: unhashable values"`). Alternative écartée : laisser
+    le `TypeError` remonter, ce qui aurait fait échouer tout le profil pour
+    une seule colonne de listes. `n_unique` exclut les manquants.
+  - Décision : `profile_column(name, series)` ne valide rien et traite une
+    colonne à la fois (frontière prévue pour un futur moteur Polars/DuckDB) ;
+    `profile_dataframe` parcourt les colonnes par position, jamais par le nom
+    converti en texte.
+  - Correctif de la Phase 1 : `1` (entier) et `"1"` (texte) passaient la
+    validation mais devenaient le même nom dans les résultats.
+    `validate_dataframe` lève désormais `ValueError`. Alternative écartée :
+    renommer automatiquement (masquerait le problème à l'utilisateur).
+  - Hors périmètre volontaire : statistiques descriptives, inférence de types
+    et de rôles, alertes/seuils, doublons de lignes, chaînes vides, export
+    JSON/HTML, exports dans `__init__.py` (aucune façade avant `analyze`),
+    colonnes MultiIndex.
+  - Vérifié : 70 tests verts sous pandas 3.0.6 et sous pandas 2.3.3 ; aucune
+    dépendance ajoutée.
+
 ## Hygiène du packaging (entre Phase 1 et Phase 2)
 
 - **2026-09-18** — Audit du wheel et du sdist, puis six correctifs (un commit
