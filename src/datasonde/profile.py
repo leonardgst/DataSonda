@@ -2,9 +2,10 @@
 
 from typing import TYPE_CHECKING
 
+import pandas as pd
 from pandas.api import types as pdt
 
-from datasonde.models import DtypeFamily
+from datasonde.models import ColumnProfile, DtypeFamily
 
 if TYPE_CHECKING:
     from pandas._typing import DtypeObj
@@ -41,3 +42,35 @@ def classify_dtype(dtype: "DtypeObj") -> DtypeFamily:
     if pdt.is_string_dtype(dtype) or pdt.is_object_dtype(dtype):
         return DtypeFamily.TEXT_OR_OBJECT
     return DtypeFamily.OTHER
+
+
+def profile_column(name: str, series: pd.Series) -> ColumnProfile:
+    """Compute the basic facts of one column. Does not validate and does not modify ``series``.
+
+    A missing value is a null in the pandas sense (``isna()``: ``None``, ``NaN``,
+    ``pd.NA``, ``NaT``). ``inf``, empty strings, blank strings and sentinels such as
+    ``"N/A"`` or ``"-999"`` are NOT missing.
+
+    ``n_unique`` excludes missing values, so an entirely empty column has 0 distinct
+    values. It is ``None`` (with a warning) when the values are unhashable.
+    ``missing_rate`` is ``None`` when the column has no rows.
+    """
+    n_rows = len(series)
+    n_missing = int(series.isna().sum())
+    warnings: list[str] = []
+    n_unique: int | None
+    try:
+        n_unique = int(series.nunique(dropna=True))
+    except TypeError:
+        n_unique = None
+        warnings.append("n_unique not computed: unhashable values")
+    return ColumnProfile(
+        name=name,
+        family=classify_dtype(series.dtype),
+        n_rows=n_rows,
+        n_missing=n_missing,
+        n_non_missing=n_rows - n_missing,
+        missing_rate=n_missing / n_rows if n_rows else None,
+        n_unique=n_unique,
+        warnings=tuple(warnings),
+    )
