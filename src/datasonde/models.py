@@ -75,3 +75,17 @@ class ColumnProfile:
             "n_unique": self.n_unique,
             "warnings": list(self.warnings),
         }
+
+
+@dataclass(frozen=True)
+class DatasetProfile:
+    """General metadata plus the basic profile of every column, in column order."""
+
+    metadata: DatasetMetadata
+    columns: tuple[ColumnProfile, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "metadata": self.metadata.to_dict(),
+            "columns": [c.to_dict() for c in self.columns],
+        }

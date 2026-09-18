@@ -8,7 +8,7 @@ import pandas as pd
 import pytest
 
 from datasonde.models import ColumnProfile, DtypeFamily
-from datasonde.profile import profile_column
+from datasonde.profile import profile_column, profile_dataframe
 
 UNHASHABLE = "n_unique not computed: unhashable values"
 THREE_DATES = pd.to_datetime(["2020-01-01", "2020-01-02", "2020-01-01"])
@@ -165,3 +165,91 @@ def test_to_dict_shape() -> None:
     assert d["family"] == "text_or_object"
     assert d["n_unique"] is None
     assert d["warnings"] == [UNHASHABLE]
+
+
+def _mixed_frame() -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "num": [1.0, None, 3.0],
+            "flag": [True, False, True],
+            "when": pd.to_datetime(["2020-01-01", None, "2020-01-03"]),
+            "kind": pd.Series(["a", "b", "a"], dtype="category"),
+            "text": ["x", "y", None],
+            "lists": [[1], [2], [3]],
+        }
+    )
+
+
+def test_profile_dataframe_full_profile() -> None:
+    profile = profile_dataframe(_mixed_frame())
+    assert [c.name for c in profile.columns] == ["num", "flag", "when", "kind", "text", "lists"]
+    assert [c.family for c in profile.columns] == [
+        DtypeFamily.NUMERIC,
+        DtypeFamily.BOOLEAN,
+        DtypeFamily.DATETIME,
+        DtypeFamily.CATEGORICAL,
+        DtypeFamily.TEXT_OR_OBJECT,
+        DtypeFamily.TEXT_OR_OBJECT,
+    ]
+    assert [c.n_missing for c in profile.columns] == [1, 0, 1, 0, 1, 0]
+    assert profile.columns[-1].n_unique is None
+    assert profile.columns[-1].warnings == (UNHASHABLE,)
+
+
+def test_profile_dataframe_metadata_matches_columns() -> None:
+    profile = profile_dataframe(_mixed_frame())
+    assert profile.metadata.n_rows == 3
+    assert profile.metadata.n_columns == len(profile.columns) == 6
+    assert [c.name for c in profile.metadata.columns] == [c.name for c in profile.columns]
+    assert all(c.n_rows == profile.metadata.n_rows for c in profile.columns)
+
+
+def test_profile_dataframe_non_string_column_names() -> None:
+    df = pd.DataFrame({0: [1, None], "a": ["x", "y"], 2.5: [True, False]})
+    profile = profile_dataframe(df)
+    assert [c.name for c in profile.columns] == ["0", "a", "2.5"]
+    assert profile.columns[0].n_missing == 1
+    assert profile.columns[1].family is DtypeFamily.TEXT_OR_OBJECT
+    assert profile.columns[2].family is DtypeFamily.BOOLEAN
+
+
+def test_profile_dataframe_repeated_index_values() -> None:
+    df = pd.DataFrame({"a": [1, 2, None], "b": ["x", "x", "y"]}, index=[7, 7, 7])
+    profile = profile_dataframe(df)
+    assert [(c.n_rows, c.n_missing, c.n_unique) for c in profile.columns] == [(3, 1, 2), (3, 0, 2)]
+
+
+def test_profile_dataframe_zero_rows() -> None:
+    profile = profile_dataframe(pd.DataFrame({"a": pd.Series([], dtype="int64")}))
+    assert profile.metadata.n_rows == 0
+    assert profile.columns[0].missing_rate is None
+    assert profile.columns[0].n_unique == 0
+
+
+def test_profile_dataframe_to_dict_is_strict_json() -> None:
+    profile = profile_dataframe(_mixed_frame())
+    d = profile.to_dict()
+    assert set(d) == {"metadata", "columns"}
+    text = json.dumps(d, allow_nan=False)
+    assert json.loads(text)["columns"][0]["family"] == "numeric"
+
+
+def test_profile_dataframe_does_not_modify_input() -> None:
+    df = _mixed_frame()
+    before = df.copy(deep=True)
+    profile_dataframe(df)
+    pd.testing.assert_frame_equal(df, before)
+
+
+@pytest.mark.parametrize(
+    ("bad", "error"),
+    [
+        ([1, 2], TypeError),
+        (pd.DataFrame(), ValueError),
+        (pd.DataFrame({1: [1], "1": [2]}), ValueError),
+    ],
+    ids=["not_a_dataframe", "no_columns", "colliding_names"],
+)
+def test_profile_dataframe_rejects_invalid_input(bad: object, error: type[Exception]) -> None:
+    with pytest.raises(error):
+        profile_dataframe(bad)

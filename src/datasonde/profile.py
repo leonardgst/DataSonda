@@ -1,11 +1,12 @@
 """Per-column profiling: dtype family and basic value facts."""
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pandas as pd
 from pandas.api import types as pdt
 
-from datasonde.models import ColumnProfile, DtypeFamily
+from datasonde.metadata import describe_dataframe, validate_dataframe
+from datasonde.models import ColumnProfile, DatasetProfile, DtypeFamily
 
 if TYPE_CHECKING:
     from pandas._typing import DtypeObj
@@ -74,3 +75,21 @@ def profile_column(name: str, series: pd.Series) -> ColumnProfile:
         n_unique=n_unique,
         warnings=tuple(warnings),
     )
+
+
+def profile_dataframe(df: Any) -> DatasetProfile:
+    """Validate ``df`` and profile every column.
+
+    Columns are read by position, never by their string name, so non-string labels
+    (e.g. ``0``) are handled correctly. The input is not modified.
+
+    Raises:
+        TypeError, ValueError: see :func:`datasonde.metadata.validate_dataframe`.
+    """
+    df = validate_dataframe(df)
+    metadata = describe_dataframe(df)
+    columns = tuple(
+        profile_column(str(label), df.iloc[:, position])
+        for position, label in enumerate(df.columns)
+    )
+    return DatasetProfile(metadata=metadata, columns=columns)
