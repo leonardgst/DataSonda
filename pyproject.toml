@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = { file = "LICENSE" }
 authors = [
-    { name = "Ton Nom", email = "ton.email@example.com" }
+    { name = "Léonard Gousset" },
 ]
 dependencies = [
     "pandas>=2.0",
