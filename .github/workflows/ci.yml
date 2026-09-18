@@ -35,3 +35,9 @@ jobs:
 
       - name: Test (pytest)
         run: uv run pytest
+
+      - name: Test against pandas 2.x
+        if: matrix.python-version == '3.11'
+        run: |
+          uv pip install "pandas<3"
+          uv run --no-sync pytest
