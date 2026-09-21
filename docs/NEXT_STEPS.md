@@ -4,10 +4,11 @@ _Dernière mise à jour : 2026-09-21_
 
 ## Phase en cours
 
-Phase 2 — Profil de base des colonnes : mergée dans `main` (PR #3). Le seul
-travail en cours est un correctif post-revue (branche
-`fix/n-unique-unsupported-dtypes`) : `n_unique` ne fait plus planter le profil
-sur les types non supportés (colonnes Arrow imbriquées).
+Phase 2 bis — Rapport minimal (tranche verticale : `analyze()`, export HTML et
+JSON, démo), intercalée avant la Phase 3 pour disposer d'une démo de bout en
+bout. Implémentée sur la branche `feat/minimal-report` (4 commits, pas encore
+poussée ni mergée). La Phase 2 et son correctif post-revue sont mergés dans
+`main` (PR #3 et PR #4).
 
 ## Ce qui est fait
 
@@ -30,12 +31,25 @@ sur les types non supportés (colonnes Arrow imbriquées).
   (`"n_unique not computed: unhashable values"`) des types non supportés
   (`"n_unique not computed: unsupported dtype"`). Suite locale : 75 tests
   collectés, dont 3 ignorés sans `pyarrow` (72 exécutés) ; les 75 passent
-  avec `pyarrow` installé temporairement, sous pandas 3 et pandas 2
+  avec `pyarrow` installé temporairement, sous pandas 3 et pandas 2. Mergé
+  via la PR #4
+- Phase 2 bis : `analyze(df, name=None)` → `Report` (`to_dict`, `to_json`,
+  `to_html`, `export`), rendu HTML autonome dans `html_report.py`,
+  `_version.py`, façade `__init__.py` (`analyze`, `Report`, `__version__`),
+  `examples/demo.py` (dataset synthétique de 500 lignes), README réel
+  (placeholder d'URL corrigé, nom « DataSonda »). `profile.py`, `metadata.py`
+  et `models.py` inchangés, aucune dépendance ajoutée
+- Vérifications locales de la Phase 2 bis : 142 tests réussis et 3 ignorés
+  (145 collectés), sous pandas 3.0.6 et sous pandas 2.3.3 ; ruff et mypy verts.
+  Le snippet du README et `uv run python examples/demo.py` ont été exécutés
+  pour de vrai
 
 ## En cours / à vérifier
 
-- Confirmer que la CI est verte sur la PR de ce correctif (matrice
-  3.11/3.12/3.13 + étape pandas 2.x)
+- Pousser la branche `feat/minimal-report`, ouvrir la PR et confirmer que la CI
+  est verte (matrice 3.11/3.12/3.13 + étape pandas 2.x)
+- Ouvrir `examples/output/customers_demo.html` dans un navigateur pour un
+  contrôle visuel (non fait par Claude)
 
 ## Décisions actées
 
@@ -51,18 +65,38 @@ sur les types non supportés (colonnes Arrow imbriquées).
   `text_or_object`, `other` (complexes, timedelta, période, intervalle)
 - Valeur manquante = `isna()` pandas uniquement ; « non calculable » = `None`
   (jamais NaN ni 0), avec un avertissement, sans jamais faire planter le profil
-- Aucune façade publique dans `__init__.py` avant l'existence de `analyze`
+- Façade provisoire (tant que la version est `0.1.0.dev0`) : `analyze`,
+  `Report` et `__version__` exportés par `__init__.py` ; `analyze` n'accepte
+  qu'un DataFrame (`TypeError` sinon)
+- `export(path)` : format déduit de l'extension (`.html`, `.json`,
+  insensible à la casse), `ValueError` avant toute écriture sinon ; écrase un
+  fichier existant, ne crée pas les dossiers ; UTF-8 sans BOM, fins de ligne
+  `\n`
+- Rendu HTML : bibliothèque standard uniquement (pas de Jinja2), tout texte
+  dynamique échappé, aucun script ni ressource externe, aucune valeur de
+  cellule, aucun horodatage (même entrée = mêmes octets)
 
 ## Prochaine étape
 
-Feuille de route (numérotation à confirmer ensemble) : le chargement CSV,
-prévu à l'origine en Phase 2, est repoussé.
+Après l'entretien du vendredi 25 septembre : **cadrer la Phase 3** avec toi
+avant de coder. Feuille de route (numérotation à confirmer ensemble) : le
+chargement CSV, prévu à l'origine en Phase 2, est repoussé.
 
 **Phase 3** (à cadrer avec toi avant de coder) : inférence de types
 statistiques à partir du profil de base (constantes, colonnes presque vides,
 identifiants, booléens contenant `None`). Le chargement CSV, les statistiques
 descriptives, la qualité et les exports sont à replacer dans les phases
 suivantes lors de ce cadrage
+
+## Limites connues du rapport minimal
+
+- Pas d'inférence de types ni de rôles (un booléen contenant des nuls apparaît
+  en `text_or_object`)
+- Pas d'alertes de qualité, pas de statistiques univariées, pas de graphiques
+- API et format JSON provisoires (JSON non versionné)
+- Pas de chargement de fichiers : `analyze` n'accepte qu'un DataFrame
+- Valeur manquante = nul pandas uniquement (chaînes vides, `"N/A"` et
+  sentinelles non comptées)
 
 ## Limites connues
 
@@ -96,6 +130,8 @@ suivantes lors de ce cadrage
   dépendance). Le test monkeypatch couvre la même branche. Pour le lancer :
   `uv pip install pyarrow`, `uv run --no-sync pytest tests/test_profile.py`,
   puis `uv sync`
+- Démo : `uv run python examples/demo.py` (depuis la racine du dépôt) écrit
+  le rapport dans `examples/output/`, dossier ignoré par Git
 - PowerShell 5.1 : toujours utiliser `[System.IO.File]::WriteAllText` avec
   `UTF8Encoding($false)` pour écrire des fichiers texte (jamais
   `Set-Content -Encoding utf8`, qui ajoute un BOM)
