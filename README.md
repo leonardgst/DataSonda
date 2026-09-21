@@ -56,6 +56,16 @@ resource) and shows facts only. No raw cell value is ever written to the report.
   not counted.
 - No quality alerts, univariate statistics or charts yet.
 
+## Demo
+
+```bash
+uv run python examples/demo.py
+```
+
+This profiles a synthetic, deterministic 500-row DataFrame (no real data) and writes
+`customers_demo.html` and `customers_demo.json` to `examples/output/`, which is ignored
+by Git.
+
 ## Development
 
 ```bash
