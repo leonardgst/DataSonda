@@ -1,6 +1,7 @@
 """Tests for type inference from dtype, numeric values and plain text."""
 
 import json
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -8,7 +9,10 @@ import pandas as pd
 import pytest
 
 from datasonde.inference import (
+    _DATE_FORMATS,
+    _DATE_GROUPS,
     SAMPLE_SEED,
+    _accepted,
     _sample_values,
     infer_column_type,
     infer_types,
@@ -145,8 +149,8 @@ def test_catalogue_covers_every_reason_code_used_by_this_step() -> None:
     covered = {case[3] for case in CASES}
     covered |= {code for case in NUMBER_TEXT_CASES for code in case[3]}
     covered |= {R.USER_OVERRIDE}  # covered by the override tests
-    not_yet_used = {R.DATETIME_TEXT_FORMAT, R.DATETIME_TEXT_AMBIGUOUS, R.DATETIME_TEXT_CONFLICT}
-    assert set(R) - not_yet_used == covered
+    covered |= {R.DATETIME_TEXT_FORMAT, R.DATETIME_TEXT_AMBIGUOUS, R.DATETIME_TEXT_CONFLICT}
+    assert set(R) == covered  # the date codes are covered by the date tests below
 
 
 # --- Cases from our experiments ------------------------------------------------------------
@@ -468,6 +472,218 @@ def test_override_keeps_the_automatic_warnings() -> None:
     )
 
 
+# --- Dates stored as text ------------------------------------------------------------------
+
+AMBIGUOUS_WARNING = "date format ambiguous: day-first and month-first both fit"
+CONFLICT_WARNING = "conflicting date formats: day-first and month-first values are mixed"
+SEVERAL_WARNING = "conflicting date formats: several date formats are mixed"
+
+
+def repeated(values: list[str], times: int = 15) -> pd.Series:
+    return pd.Series(values * times)
+
+
+@pytest.mark.parametrize(
+    ("values", "expected_format"),
+    [
+        (["2024-01-05", "2024-02-10"], "iso_date"),
+        (["2024-1-5", "2024-2-10"], "iso_date"),
+        (["2024-01-05T10:00:00", "2024-02-10T23:59:59"], "iso_datetime_t"),
+        (["2024-01-05 10:00:00", "2024-02-10 23:59:59"], "iso_datetime_space"),
+        (["2024/01/05", "2024/12/31"], "ymd_slash"),
+        (["05.01.2024", "31.12.2023"], "dmy_dot"),
+        (["25/01/2024", "05/02/2024"], "dmy_slash"),
+        (["25/1/2024", "5/2/2024"], "dmy_slash"),
+        (["01/25/2024", "02/05/2024"], "mdy_slash"),
+        (["25-01-2024", "05-02-2024"], "dmy_dash"),
+        (["01-25-2024", "02-05-2024"], "mdy_dash"),
+        (["25/01/2024 10:00:00", "05/02/2024 11:00:00"], "dmy_slash_time"),
+        (["01/25/2024 10:00:00", "02/05/2024 11:00:00"], "mdy_slash_time"),
+    ],
+)
+def test_recognised_date_formats(values: list[str], expected_format: str) -> None:
+    result = infer(repeated(values))
+    assert result.inferred_type is T.DATETIME
+    assert result.role_hint is None
+    assert codes(result) == [R.DATETIME_TEXT_FORMAT]
+    assert evidence(result)["format"] == expected_format
+    assert result.warnings == ()
+
+
+def test_day_first_is_decided_by_values_that_can_only_be_day_first() -> None:
+    result = infer(repeated(["25/01/2024", "05/02/2024", "13/03/2024"], 10))
+    data = evidence(result)
+    assert data["format"] == "dmy_slash"
+    assert data["decisive_values"] == 20  # 25/01 and 13/03, ten times each
+    assert result.warnings == ()
+
+
+def test_month_first_is_decided_by_values_that_can_only_be_month_first() -> None:
+    data = evidence(infer(repeated(["01/25/2024", "02/05/2024"], 10)))
+    assert data["format"] == "mdy_slash"
+    assert data["decisive_values"] == 10
+
+
+@pytest.mark.parametrize(
+    ("values", "group"),
+    [
+        (["01/02/2024", "03/04/2024", "05/06/2024"], "slash"),
+        (["01-02-2024", "03-04-2024"], "dash"),
+        (["01/02/2024 10:00:00", "03/04/2024 11:00:00"], "slash_time"),
+    ],
+)
+def test_ambiguous_days_and_months_are_flagged_not_chosen(values: list[str], group: str) -> None:
+    result = infer(repeated(values, 10))
+    assert result.inferred_type is T.DATETIME
+    assert codes(result) == [R.DATETIME_TEXT_AMBIGUOUS]
+    assert result.warnings == (AMBIGUOUS_WARNING,)
+    assert evidence(result)["group"] == group
+    assert evidence(result)["ambiguous_values"] == 10 * len(values)
+    assert "format" not in evidence(result)
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        ["25/01/2024", "01/25/2024"],
+        ["25-01-2024", "01-25-2024"],
+        ["25/01/2024 10:00:00", "01/25/2024 10:00:00"],
+    ],
+)
+def test_mixed_day_first_and_month_first_is_a_conflict(values: list[str]) -> None:
+    result = infer(repeated(values, 10))
+    assert result.inferred_type is T.UNKNOWN
+    assert codes(result) == [R.DATETIME_TEXT_CONFLICT]
+    assert result.warnings == (CONFLICT_WARNING,)
+    data = evidence(result)
+    assert (data["day_first_only"], data["month_first_only"], data["both"]) == (10, 10, 0)
+
+
+def test_a_ratio_never_settles_day_versus_month() -> None:
+    # 96% ambiguous values plus 4% with a day > 12: both formats reach 0.95 on their own.
+    ambiguous = [f"{1 + i % 12:02d}/{1 + (i // 12) % 12:02d}/2024" for i in range(96)]
+    day_first_only = ["25/01/2024", "26/01/2024", "27/01/2024", "28/01/2024"]
+    result = infer(pd.Series(ambiguous + day_first_only))
+    assert codes(result) == [R.DATETIME_TEXT_FORMAT]
+    assert evidence(result)["format"] == "dmy_slash"
+    assert evidence(result)["decisive_values"] == 4
+    assert result.warnings == ()
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        ["01/02/24", "03/04/24"],  # two-digit years
+        ["31/04/2024", "30/02/2024"],  # impossible dates
+        ["2024-13-01", "2024-02-30"],
+        ["25/01/2024 10:00", "05/02/2024 11:00"],  # time without seconds
+        [" 25/01/2024", "05/02/2024 "],  # surrounding spaces
+        ["2024-01-05T10:00:00Z", "2024-02-10T10:00:00Z"],  # time zone
+        ["2024-01-05T10:00:00.123", "2024-02-10T10:00:00.456"],  # fractions of seconds
+        ["5 Jan 2024", "6 Feb 2024"],  # month names
+        ["20240105", "20240210"],  # compact form: numbers, not dates
+    ],
+)
+def test_unsupported_date_forms_are_not_dates(values: list[str]) -> None:
+    result = infer(repeated(values))
+    assert result.inferred_type is not T.DATETIME
+    assert not {R.DATETIME_TEXT_FORMAT, R.DATETIME_TEXT_AMBIGUOUS} & set(codes(result))
+
+
+@pytest.mark.parametrize(("valid", "recognised"), [(89, False), (90, True), (91, True)])
+def test_date_tolerance_boundary_with_custom_ratio(valid: int, recognised: bool) -> None:
+    series = pd.Series(["2024-01-05"] * valid + ["N/A"] * (100 - valid))
+    result = infer(series, thresholds=InferenceThresholds(text_parse_min_ratio=0.9))
+    assert (result.inferred_type is T.DATETIME) is recognised
+
+
+@pytest.mark.parametrize(("valid", "recognised"), [(94, False), (95, True)])
+def test_date_default_tolerance_is_five_percent(valid: int, recognised: bool) -> None:
+    series = pd.Series(["2024-01-05"] * valid + ["N/A"] * (100 - valid))
+    assert (infer(series).inferred_type is T.DATETIME) is recognised
+
+
+def test_several_retained_groups_are_a_conflict() -> None:
+    series = pd.Series(["2024-01-05"] * 10 + ["05.01.2024"] * 10)
+    result = infer(series, thresholds=InferenceThresholds(text_parse_min_ratio=0.5))
+    assert result.inferred_type is T.UNKNOWN
+    assert codes(result) == [R.DATETIME_TEXT_CONFLICT]
+    assert evidence(result)["n_groups"] == 2
+    assert result.warnings == (SEVERAL_WARNING,)
+
+
+@pytest.mark.parametrize(
+    ("value", "recognised"),
+    [
+        ("1677-09-21", False),  # before the datetime64[ns] range
+        ("1677-09-22", True),
+        ("2262-04-11", True),
+        ("2262-04-12", False),
+        ("31/12/9999", False),
+        ("01/01/1500", False),
+        ("0001-01-01", False),
+    ],
+)
+def test_only_dates_in_the_ns_range_are_recognised(value: str, recognised: bool) -> None:
+    # pandas 3 alone would accept years 1-9999: the range keeps both versions identical.
+    assert (infer(pd.Series([value] * 30)).inferred_type is T.DATETIME) is recognised
+
+
+def test_a_far_future_sentinel_counts_as_unrecognised() -> None:
+    series = pd.Series(["2024-01-05"] * 90 + ["9999-12-31"] * 10)
+    assert infer(series).inferred_type is not T.DATETIME
+
+
+def test_date_groups_are_disjoint() -> None:
+    days = [datetime(2020, 1, 1) + timedelta(days=7 * k) for k in range(120)]
+    group_of = {name: group for group, names in _DATE_GROUPS for name in names}
+    for own_id, own_format in _DATE_FORMATS.items():
+        strings = pd.Series([day.strftime(own_format) for day in days])
+        assert _accepted(strings, own_format).all(), own_id
+        for other_id, other_format in _DATE_FORMATS.items():
+            if group_of[other_id] != group_of[own_id]:
+                assert not _accepted(strings, other_format).any(), (own_id, other_id)
+
+
+def test_dates_are_never_identifiers_and_record_the_sample() -> None:
+    days = [(datetime(2000, 1, 1) + timedelta(days=k)).strftime("%Y-%m-%d") for k in range(3000)]
+    result = infer(pd.Series(days))
+    assert result.inferred_type is T.DATETIME
+    assert result.role_hint is None
+    data = evidence(result)
+    assert (data["sample_size"], data["population"]) == (1000, 3000)
+
+
+def test_two_distinct_dates_use_exact_counts() -> None:
+    data = evidence(infer(pd.Series(["2024-01-05", "2024-02-10"] * 1500)))
+    assert data["parse_ratio"] == 1.0
+    assert "sample_size" not in data
+
+
+def test_date_parse_ratio_is_pinned_across_pandas_versions() -> None:
+    # Recorded under pandas 3.0.6 and 2.3.3 (identical). The true share on all 5000
+    # values is 0.923: the difference comes from the deterministic sample.
+    values = [f"{1 + i % 28:02d}/{1 + i % 12:02d}/2024" if i % 13 else "n/a" for i in range(5000)]
+    result = infer(
+        pd.Series(values, dtype=object), thresholds=InferenceThresholds(text_parse_min_ratio=0.9)
+    )
+    assert evidence(result) == {
+        "decisive_values": 543,
+        "format": "dmy_slash",
+        "parse_ratio": 0.927,
+        "population": 5000,
+        "sample_size": 1000,
+    }
+
+
+def test_override_keeps_the_ambiguity_warning() -> None:
+    result = infer(repeated(["01/02/2024", "03/04/2024"], 10), override="text")
+    assert result.inferred_type is T.TEXT
+    assert codes(result) == [R.USER_OVERRIDE]
+    assert evidence(result) == {"automatic_type": "datetime"}
+    assert result.warnings == (AMBIGUOUS_WARNING,)
+
+
 # --- Overrides -----------------------------------------------------------------------------
 
 
@@ -615,11 +831,21 @@ INVARIANT_SERIES = (
         pd.Series(["a", None, "b"] * 20),
         pd.Series([f"{i:05d}" for i in range(30)]),
         pd.Series(["1 234", "2 345"] * 20),
+        pd.Series(["25/01/2024", "05/02/2024"] * 15),
+        pd.Series(["01/02/2024", "03/04/2024"] * 15),
+        pd.Series(["25/01/2024", "01/25/2024"] * 15),
     ]
 )
 
 # Evidence strings must come from closed catalogues, never from cell values.
-CLOSED_STRING_EVIDENCE = {"family", "automatic_type", "vocabulary", "dominant_type"}
+CLOSED_STRING_EVIDENCE = {
+    "family",
+    "automatic_type",
+    "vocabulary",
+    "dominant_type",
+    "format",
+    "group",
+}
 
 
 @pytest.mark.parametrize("series", INVARIANT_SERIES)

@@ -39,13 +39,31 @@ Then by dtype family:
    b. all ``str``, exactly two distinct values which, stripped and case-folded, form
       one of the closed pairs true/false, yes/no, y/n, oui/non, t/f -> ``boolean``
       (``BOOLEAN_TEXT_VOCABULARY``);
-   c. numbers stored as text. Canonical form: ``[+-]?[0-9]+(\\.[0-9]+)?`` on the raw
+   c. dates stored as text, never guessed. A closed list of strict formats is tried
+      with ``pd.to_datetime(..., format=..., errors="coerce")``, in eight groups: five
+      single formats (``iso_date``, ``iso_datetime_t``, ``iso_datetime_space``,
+      ``ymd_slash``, ``dmy_dot``) and three day-first / month-first pairs (``slash``,
+      ``dash``, ``slash_time``). Only dates inside the ``datetime64[ns]`` range
+      (1677-09-21 to 2262-04-11) are recognised, so that pandas 2 and 3 agree. A group
+      is retained when at least ``text_parse_min_ratio`` of the values fit one of its
+      formats:
+
+      * more than one group retained -> ``unknown`` (``DATETIME_TEXT_CONFLICT``);
+      * a single format -> ``datetime`` (``DATETIME_TEXT_FORMAT``);
+      * a pair: count the values that fit only day-first, only month-first, or both.
+        Only one orientation has decisive values -> ``datetime`` with that format
+        (``DATETIME_TEXT_FORMAT``); none has -> ``datetime`` with a warning, without
+        choosing (``DATETIME_TEXT_AMBIGUOUS``); both have -> ``unknown`` with a warning
+        (``DATETIME_TEXT_CONFLICT``). The ratio is never used to settle day/month.
+
+      Two-digit years, month names, compact forms and time zones are not supported;
+   d. numbers stored as text. Canonical form: ``[+-]?[0-9]+(\\.[0-9]+)?`` on the raw
       string (no strip; no scientific notation or hexadecimal). If at least
       ``text_parse_min_ratio`` of the values are canonical:
 
       * at least one integer with a leading zero (``007``) -> a code, never a number:
-        ``categorical`` if rule 5d-ii holds, else ``text``; role
-        ``identifier_candidate`` if the counts of rule 5d-i hold, else ``code_candidate``
+        ``categorical`` if rule 5e-ii holds, else ``text``; role
+        ``identifier_candidate`` if the counts of rule 5e-i hold, else ``code_candidate``
         (``NUMERIC_LOOKING_LEADING_ZEROS``);
       * otherwise the numeric rules 4a-4e apply, "integer" meaning that no canonical
         value has a decimal point, with the extra reason ``NUMERIC_TEXT``.
@@ -55,7 +73,7 @@ Then by dtype family:
       values reach ``text_parse_min_ratio`` -> ``unknown`` (``NUMERIC_LOCALE_FORMAT``),
       with a warning. Such values are never converted and the comma is never guessed
       (``1,234`` is ambiguous);
-   d. for the remaining strings:
+   e. for the remaining strings:
 
       i. ``unique_ratio >= identifier_min_unique_ratio``, ``n >= identifier_min_rows``
          and no whitespace in the sample -> ``text`` with role ``identifier_candidate``
@@ -110,6 +128,39 @@ _LOCALE_NUMBERS = (
     r"[+-]?[0-9]{1,3}(,[0-9]{3})+(\.[0-9]+)?",  # comma thousands
 )
 LOCALE_NUMBER_WARNING = "values look numeric with locale-specific separators: not converted"
+
+# Closed list of strict date formats, tried on strings (identifier -> strptime format).
+_DATE_FORMATS: dict[str, str] = {
+    "iso_date": "%Y-%m-%d",
+    "iso_datetime_t": "%Y-%m-%dT%H:%M:%S",
+    "iso_datetime_space": "%Y-%m-%d %H:%M:%S",
+    "ymd_slash": "%Y/%m/%d",
+    "dmy_dot": "%d.%m.%Y",
+    "dmy_slash": "%d/%m/%Y",
+    "mdy_slash": "%m/%d/%Y",
+    "dmy_dash": "%d-%m-%Y",
+    "mdy_dash": "%m-%d-%Y",
+    "dmy_slash_time": "%d/%m/%Y %H:%M:%S",
+    "mdy_slash_time": "%m/%d/%Y %H:%M:%S",
+}
+# Groups of formats: a pair is (day-first, month-first) and is never settled by a ratio.
+_DATE_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("iso_date", ("iso_date",)),
+    ("iso_datetime_t", ("iso_datetime_t",)),
+    ("iso_datetime_space", ("iso_datetime_space",)),
+    ("ymd_slash", ("ymd_slash",)),
+    ("dmy_dot", ("dmy_dot",)),
+    ("slash", ("dmy_slash", "mdy_slash")),
+    ("dash", ("dmy_dash", "mdy_dash")),
+    ("slash_time", ("dmy_slash_time", "mdy_slash_time")),
+)
+# pandas 2 only holds dates in the datetime64[ns] range while pandas 3 holds years 1-9999:
+# only dates in the ns range are recognised so that both versions give the same result.
+_NS_MIN = pd.Timestamp("1677-09-21 00:12:43.145224193")
+_NS_MAX = pd.Timestamp("2262-04-11 23:47:16.854775807")
+DATE_AMBIGUOUS_WARNING = "date format ambiguous: day-first and month-first both fit"
+DATE_CONFLICT_WARNING = "conflicting date formats: day-first and month-first values are mixed"
+DATE_SEVERAL_FORMATS_WARNING = "conflicting date formats: several date formats are mixed"
 
 _DTYPE_RULES: dict[DtypeFamily, tuple[InferredType, ReasonCode]] = {
     DtypeFamily.BOOLEAN: (InferredType.BOOLEAN, ReasonCode.DTYPE_BOOLEAN),
@@ -241,9 +292,99 @@ def _matching(distinct: pd.Series, *patterns: str) -> pd.Series:
     return mask
 
 
+def _count(counts: pd.Series, mask: pd.Series) -> int:
+    """Number of values (weighted by their count) selected by ``mask``."""
+    return int(counts[mask.to_numpy()].sum())
+
+
 def _share(counts: pd.Series, mask: pd.Series) -> float:
     """Share of the values (weighted by their count) selected by ``mask``."""
-    return int(counts[mask.to_numpy()].sum()) / int(counts.sum())
+    return _count(counts, mask) / int(counts.sum())
+
+
+def _accepted(distinct: pd.Series, date_format: str) -> pd.Series:
+    """Mask of the strings that strictly fit ``date_format`` within the ns date range."""
+    parsed = pd.to_datetime(distinct, format=date_format, errors="coerce")
+    return parsed.notna() & (parsed >= _NS_MIN) & (parsed <= _NS_MAX)
+
+
+def _infer_date_text(
+    profile: ColumnProfile,
+    counts: pd.Series,
+    sample_evidence: dict[str, int | float],
+    thresholds: InferenceThresholds,
+) -> ColumnTypeInference | None:
+    """Recognise dates stored as text (rule 5c); ``None`` when the values are not dates.
+
+    A format is never guessed: a day/month ambiguity yields a warning, not a choice.
+    """
+    distinct = pd.Series(counts.index)
+    accepted = {name: _accepted(distinct, fmt) for name, fmt in _DATE_FORMATS.items()}
+
+    retained: list[tuple[str, tuple[str, ...], float]] = []
+    for group, formats in _DATE_GROUPS:
+        covered = accepted[formats[0]]
+        for name in formats[1:]:
+            covered = covered | accepted[name]
+        ratio = _share(counts, covered)
+        if ratio >= thresholds.text_parse_min_ratio:
+            retained.append((group, formats, ratio))
+    if not retained:
+        return None
+
+    def unknown(reason: Reason, warning: str) -> ColumnTypeInference:
+        return _result(profile, InferredType.UNKNOWN, reason, warnings=(warning,))
+
+    if len(retained) > 1:
+        reason = Reason.create(
+            ReasonCode.DATETIME_TEXT_CONFLICT, n_groups=len(retained), **sample_evidence
+        )
+        return unknown(reason, DATE_SEVERAL_FORMATS_WARNING)
+
+    group, formats, parse_ratio = retained[0]
+    if len(formats) == 1:
+        reason = Reason.create(
+            ReasonCode.DATETIME_TEXT_FORMAT,
+            format=formats[0],
+            parse_ratio=parse_ratio,
+            **sample_evidence,
+        )
+        return _result(profile, InferredType.DATETIME, reason)
+
+    day_first, month_first = accepted[formats[0]], accepted[formats[1]]
+    day_only = _count(counts, day_first & ~month_first)
+    month_only = _count(counts, month_first & ~day_first)
+    both = _count(counts, day_first & month_first)
+    if day_only > 0 and month_only > 0:
+        reason = Reason.create(
+            ReasonCode.DATETIME_TEXT_CONFLICT,
+            group=group,
+            day_first_only=day_only,
+            month_first_only=month_only,
+            both=both,
+            **sample_evidence,
+        )
+        return unknown(reason, DATE_CONFLICT_WARNING)
+    if day_only == 0 and month_only == 0:
+        reason = Reason.create(
+            ReasonCode.DATETIME_TEXT_AMBIGUOUS,
+            group=group,
+            parse_ratio=parse_ratio,
+            ambiguous_values=both,
+            **sample_evidence,
+        )
+        return _result(
+            profile, InferredType.DATETIME, reason, warnings=(DATE_AMBIGUOUS_WARNING,)
+        )
+    chosen, decisive = (formats[0], day_only) if day_only > 0 else (formats[1], month_only)
+    reason = Reason.create(
+        ReasonCode.DATETIME_TEXT_FORMAT,
+        format=chosen,
+        parse_ratio=parse_ratio,
+        decisive_values=decisive,
+        **sample_evidence,
+    )
+    return _result(profile, InferredType.DATETIME, reason)
 
 
 def _infer_number_text(
@@ -253,7 +394,7 @@ def _infer_number_text(
     sample_evidence: dict[str, int | float],
     thresholds: InferenceThresholds,
 ) -> ColumnTypeInference | None:
-    """Recognise numbers stored as text (rule 5c); ``None`` when the values are not numbers.
+    """Recognise numbers stored as text (rule 5d); ``None`` when the values are not numbers.
 
     ``counts`` maps each distinct string of the (sampled) values to its count. Nothing is
     converted. Values with a leading zero are codes, never numbers; values with regional
@@ -363,6 +504,9 @@ def _infer_text_or_object(
     )
 
     counts = sample.value_counts()
+    dates = _infer_date_text(profile, counts, sample_evidence, thresholds)
+    if dates is not None:
+        return dates
     numbers = _infer_number_text(profile, n_unique, counts, sample_evidence, thresholds)
     if numbers is not None:
         return numbers
