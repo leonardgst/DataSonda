@@ -53,7 +53,9 @@ def profile_column(name: str, series: pd.Series) -> ColumnProfile:
     ``"N/A"`` or ``"-999"`` are NOT missing.
 
     ``n_unique`` excludes missing values, so an entirely empty column has 0 distinct
-    values. It is ``None`` (with a warning) when the values are unhashable.
+    values. It is ``None`` (with a warning) when the values are unhashable or of a
+    dtype pandas cannot count (e.g. nested Arrow types); the other fields are still
+    computed.
     ``missing_rate`` is ``None`` when the column has no rows.
     """
     n_rows = len(series)
@@ -65,6 +67,10 @@ def profile_column(name: str, series: pd.Series) -> ColumnProfile:
     except TypeError:
         n_unique = None
         warnings.append("n_unique not computed: unhashable values")
+    except NotImplementedError:
+        # Includes pyarrow's ArrowNotImplementedError (nested list/struct/map dtypes).
+        n_unique = None
+        warnings.append("n_unique not computed: unsupported dtype")
     return ColumnProfile(
         name=name,
         family=classify_dtype(series.dtype),
