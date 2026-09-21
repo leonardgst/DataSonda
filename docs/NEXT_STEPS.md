@@ -4,11 +4,7 @@ _Dernière mise à jour : 2026-09-21_
 
 ## Phase en cours
 
-Phase 2 bis — Rapport minimal (tranche verticale : `analyze()`, export HTML et
-JSON, démo), intercalée avant la Phase 3 pour disposer d'une démo de bout en
-bout. Implémentée sur la branche `feat/minimal-report` (4 commits, pas encore
-poussée ni mergée). La Phase 2 et son correctif post-revue sont mergés dans
-`main` (PR #3 et PR #4).
+Phase 3 — Inférence de types : cadrée, implémentation en cours.
 
 ## Ce qui est fait
 
@@ -22,7 +18,7 @@ poussée ni mergée). La Phase 2 et son correctif post-revue sont mergés dans
 - Hygiène du packaging (7 commits, entre Phase 1 et Phase 2) : sdist
   restreint, auteur, encodage UTF-8, `py.typed`, mypy sans `python_version`,
   CI en matrice Python 3.11/3.12/3.13 + étape pandas 2.x (détails dans le
-  CHANGELOG). Mergé via la PR #1, CI verte
+  CHANGELOG)
 - Phase 2 : `profile.py` (`classify_dtype`, `profile_column`,
   `profile_dataframe`), `DtypeFamily`, `ColumnProfile` et `DatasetProfile`
   dans `models.py` ; correctif de validation des noms de colonnes qui
@@ -31,8 +27,7 @@ poussée ni mergée). La Phase 2 et son correctif post-revue sont mergés dans
   (`"n_unique not computed: unhashable values"`) des types non supportés
   (`"n_unique not computed: unsupported dtype"`). Suite locale : 75 tests
   collectés, dont 3 ignorés sans `pyarrow` (72 exécutés) ; les 75 passent
-  avec `pyarrow` installé temporairement, sous pandas 3 et pandas 2. Mergé
-  via la PR #4
+  avec `pyarrow` installé temporairement, sous pandas 3 et pandas 2
 - Phase 2 bis : `analyze(df, name=None)` → `Report` (`to_dict`, `to_json`,
   `to_html`, `export`), rendu HTML autonome dans `html_report.py`,
   `_version.py`, façade `__init__.py` (`analyze`, `Report`, `__version__`),
@@ -46,8 +41,6 @@ poussée ni mergée). La Phase 2 et son correctif post-revue sont mergés dans
 
 ## En cours / à vérifier
 
-- Pousser la branche `feat/minimal-report`, ouvrir la PR et confirmer que la CI
-  est verte (matrice 3.11/3.12/3.13 + étape pandas 2.x)
 - Ouvrir `examples/output/customers_demo.html` dans un navigateur pour un
   contrôle visuel (non fait par Claude)
 
@@ -78,15 +71,11 @@ poussée ni mergée). La Phase 2 et son correctif post-revue sont mergés dans
 
 ## Prochaine étape
 
-Après l'entretien du vendredi 25 septembre : **cadrer la Phase 3** avec toi
-avant de coder. Feuille de route (numérotation à confirmer ensemble) : le
-chargement CSV, prévu à l'origine en Phase 2, est repoussé.
-
-**Phase 3** (à cadrer avec toi avant de coder) : inférence de types
-statistiques à partir du profil de base (constantes, colonnes presque vides,
-identifiants, booléens contenant `None`). Le chargement CSV, les statistiques
-descriptives, la qualité et les exports sont à replacer dans les phases
-suivantes lors de ce cadrage
+**Phase 3** (en cours) : inférence de types statistiques, distincte des faits
+du profil : type inféré, indice de rôle, raisons chiffrées et avertissements,
+sans jamais deviner en silence. Les constantes et colonnes presque vides
+relèvent de la Phase 4 (qualité). Feuille de route (numérotation à confirmer
+ensemble) : le chargement CSV, prévu à l'origine en Phase 2, est repoussé.
 
 ## Limites connues du rapport minimal
 
@@ -123,8 +112,8 @@ suivantes lors de ce cadrage
   `text_or_object` ; ne jamais comparer des chaînes de dtype
 - Vérifier sous pandas 2 en local : `uv pip install "pandas<3"`, puis
   `uv run --no-sync pytest`, puis `uv sync` pour rétablir l'environnement
-- Fait : `.claude/settings.local.json` a été retiré du suivi Git (PR #2) et
-  est ignoré par `.gitignore`
+- Fait : `.claude/settings.local.json` a été retiré du suivi Git et est
+  ignoré par `.gitignore`
 - Le test Arrow réel (`test_nested_arrow_dtype_gives_none_and_warning`) est
   ignoré partout où `pyarrow` est absent, CI comprise (`pyarrow` n'est pas une
   dépendance). Le test monkeypatch couvre la même branche. Pour le lancer :

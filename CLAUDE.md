@@ -37,6 +37,9 @@ Voir @docs/CHANGELOG.md pour l'historique des décisions et des versions.
 - Écris des tests pour toute nouvelle logique métier (pas pour la config).
 - À la fin d'une session de travail, mets à jour `docs/NEXT_STEPS.md` et
   `docs/CHANGELOG.md` pour refléter ce qui vient d'être fait.
+- Docs : ne jamais consigner l'état Git ou CI dans `docs/` (branche poussée
+  ou non, PR mergée ou non, CI verte ou non) ; GitHub fait foi. Décrire ce que
+  le code fait et les décisions prises.
 
 ## Pièges connus
 
