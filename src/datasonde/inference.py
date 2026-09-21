@@ -39,16 +39,35 @@ Then by dtype family:
    b. all ``str``, exactly two distinct values which, stripped and case-folded, form
       one of the closed pairs true/false, yes/no, y/n, oui/non, t/f -> ``boolean``
       (``BOOLEAN_TEXT_VOCABULARY``);
-   c. ``unique_ratio >= identifier_min_unique_ratio``, ``n >= identifier_min_rows`` and
-      no whitespace in the sample -> ``text`` with role ``identifier_candidate``
-      (``TEXT_IDENTIFIER_LIKE``);
-   d. ``n_unique <= categorical_max_unique`` and
-      ``unique_ratio <= categorical_max_unique_ratio`` -> ``categorical``
-      (``FEW_REPEATED_VALUES``);
-   e. otherwise -> ``text`` (``FREE_TEXT_FALLBACK``).
+   c. numbers stored as text. Canonical form: ``[+-]?[0-9]+(\\.[0-9]+)?`` on the raw
+      string (no strip; no scientific notation or hexadecimal). If at least
+      ``text_parse_min_ratio`` of the values are canonical:
+
+      * at least one integer with a leading zero (``007``) -> a code, never a number:
+        ``categorical`` if rule 5d-ii holds, else ``text``; role
+        ``identifier_candidate`` if the counts of rule 5d-i hold, else ``code_candidate``
+        (``NUMERIC_LOOKING_LEADING_ZEROS``);
+      * otherwise the numeric rules 4a-4e apply, "integer" meaning that no canonical
+        value has a decimal point, with the extra reason ``NUMERIC_TEXT``.
+
+      Otherwise, if some values use regional separators (decimal comma, thousands
+      space, non-breaking or narrow space, thousands comma) and canonical + regional
+      values reach ``text_parse_min_ratio`` -> ``unknown`` (``NUMERIC_LOCALE_FORMAT``),
+      with a warning. Such values are never converted and the comma is never guessed
+      (``1,234`` is ambiguous);
+   d. for the remaining strings:
+
+      i. ``unique_ratio >= identifier_min_unique_ratio``, ``n >= identifier_min_rows``
+         and no whitespace in the sample -> ``text`` with role ``identifier_candidate``
+         (``TEXT_IDENTIFIER_LIKE``);
+      ii. ``n_unique <= categorical_max_unique`` and
+          ``unique_ratio <= categorical_max_unique_ratio`` -> ``categorical``
+          (``FEW_REPEATED_VALUES``);
+      iii. otherwise -> ``text`` (``FREE_TEXT_FALLBACK``).
 
 Text analyses run on the non-null values, or on a deterministic sample of at most
 ``sample_size`` of them (``sample(random_state=SAMPLE_SEED)``) when there are more.
+With at most two distinct values, counts are exact over the whole column instead.
 """
 
 from collections.abc import Mapping
@@ -81,12 +100,39 @@ _BOOLEAN_VOCABULARIES: dict[str, frozenset[str]] = {
     "t_f": frozenset({"t", "f"}),
 }
 
+# Patterns for numbers stored as text, matched on the raw string (no strip) with
+# ``str.fullmatch``. Digits are ASCII only.
+_CANONICAL_NUMBER = r"[+-]?[0-9]+(\.[0-9]+)?"
+_LEADING_ZERO_INTEGER = r"[+-]?0[0-9]+"
+_LOCALE_NUMBERS = (
+    r"[+-]?[0-9]+,[0-9]+",  # decimal comma
+    r"[+-]?[0-9]{1,3}([   ][0-9]{3})+([.,][0-9]+)?",  # space thousands
+    r"[+-]?[0-9]{1,3}(,[0-9]{3})+(\.[0-9]+)?",  # comma thousands
+)
+LOCALE_NUMBER_WARNING = "values look numeric with locale-specific separators: not converted"
+
 _DTYPE_RULES: dict[DtypeFamily, tuple[InferredType, ReasonCode]] = {
     DtypeFamily.BOOLEAN: (InferredType.BOOLEAN, ReasonCode.DTYPE_BOOLEAN),
     DtypeFamily.DATETIME: (InferredType.DATETIME, ReasonCode.DTYPE_DATETIME),
     DtypeFamily.CATEGORICAL: (InferredType.CATEGORICAL, ReasonCode.DTYPE_CATEGORICAL),
     DtypeFamily.OTHER: (InferredType.UNKNOWN, ReasonCode.DTYPE_OTHER),
 }
+
+
+def _meets_identifier_counts(
+    unique_ratio: float, n_non_missing: int, thresholds: InferenceThresholds
+) -> bool:
+    return (
+        unique_ratio >= thresholds.identifier_min_unique_ratio
+        and n_non_missing >= thresholds.identifier_min_rows
+    )
+
+
+def _is_categorical(n_unique: int, unique_ratio: float, thresholds: InferenceThresholds) -> bool:
+    return (
+        n_unique <= thresholds.categorical_max_unique
+        and unique_ratio <= thresholds.categorical_max_unique_ratio
+    )
 
 
 def _sample_values(non_null: pd.Series, sample_size: int) -> pd.Series:
@@ -119,10 +165,7 @@ def _classify_numeric(
             ReasonCode.NON_INTEGER_NUMBERS, n_unique=n_unique, n_non_missing=n_non_missing
         )
         return InferredType.NUMERIC_CONTINUOUS, None, reason
-    if (
-        unique_ratio >= thresholds.identifier_min_unique_ratio
-        and n_non_missing >= thresholds.identifier_min_rows
-    ):
+    if _meets_identifier_counts(unique_ratio, n_non_missing, thresholds):
         reason = Reason.create(
             ReasonCode.INTEGER_UNIQUE_IDENTIFIER,
             n_unique=n_unique,
@@ -190,6 +233,96 @@ def _boolean_vocabulary(distinct_values: list[str]) -> str | None:
     return None
 
 
+def _matching(distinct: pd.Series, *patterns: str) -> pd.Series:
+    """Boolean mask of the distinct values that fully match at least one pattern."""
+    mask = distinct.str.fullmatch(patterns[0])
+    for pattern in patterns[1:]:
+        mask = mask | distinct.str.fullmatch(pattern)
+    return mask
+
+
+def _share(counts: pd.Series, mask: pd.Series) -> float:
+    """Share of the values (weighted by their count) selected by ``mask``."""
+    return int(counts[mask.to_numpy()].sum()) / int(counts.sum())
+
+
+def _infer_number_text(
+    profile: ColumnProfile,
+    n_unique: int,
+    counts: pd.Series,
+    sample_evidence: dict[str, int | float],
+    thresholds: InferenceThresholds,
+) -> ColumnTypeInference | None:
+    """Recognise numbers stored as text (rule 5c); ``None`` when the values are not numbers.
+
+    ``counts`` maps each distinct string of the (sampled) values to its count. Nothing is
+    converted. Values with a leading zero are codes, never numbers; values with regional
+    separators are reported as unknown, never converted or guessed.
+    """
+    n_non_missing = profile.n_non_missing
+    distinct = pd.Series(counts.index)
+    canonical = _matching(distinct, _CANONICAL_NUMBER)
+    parse_ratio = _share(counts, canonical)
+    unique_ratio = n_unique / n_non_missing
+
+    if parse_ratio >= thresholds.text_parse_min_ratio:
+        leading_zero_ratio = _share(counts, _matching(distinct, _LEADING_ZERO_INTEGER))
+        if leading_zero_ratio > 0:
+            code_role = (
+                RoleHint.IDENTIFIER_CANDIDATE
+                if _meets_identifier_counts(unique_ratio, n_non_missing, thresholds)
+                else RoleHint.CODE_CANDIDATE
+            )
+            code_type = (
+                InferredType.CATEGORICAL
+                if _is_categorical(n_unique, unique_ratio, thresholds)
+                else InferredType.TEXT
+            )
+            reason = Reason.create(
+                ReasonCode.NUMERIC_LOOKING_LEADING_ZEROS,
+                leading_zero_ratio=leading_zero_ratio,
+                parse_ratio=parse_ratio,
+                n_unique=n_unique,
+                n_non_missing=n_non_missing,
+                unique_ratio=unique_ratio,
+                **sample_evidence,
+            )
+            return _result(profile, code_type, reason, code_role)
+
+        has_point = bool(distinct[canonical].str.contains(".", regex=False).any())
+        inferred_type, role, numeric_reason = _classify_numeric(
+            n_unique=n_unique,
+            n_non_missing=n_non_missing,
+            is_integer=not has_point,
+            is_binary=n_unique == 2 and set(distinct) == {"0", "1"},
+            thresholds=thresholds,
+        )
+        text_reason = Reason.create(
+            ReasonCode.NUMERIC_TEXT, parse_ratio=parse_ratio, **sample_evidence
+        )
+        return ColumnTypeInference(
+            name=profile.name,
+            inferred_type=inferred_type,
+            role_hint=role,
+            reasons=(text_reason, numeric_reason),
+        )
+
+    locale_ratio = _share(counts, _matching(distinct, *_LOCALE_NUMBERS))
+    # parse_ratio is below the threshold here, so reaching it implies some regional value.
+    if parse_ratio + locale_ratio >= thresholds.text_parse_min_ratio:
+        reason = Reason.create(
+            ReasonCode.NUMERIC_LOCALE_FORMAT,
+            parse_ratio=parse_ratio,
+            locale_ratio=locale_ratio,
+            n_non_missing=n_non_missing,
+            **sample_evidence,
+        )
+        return _result(
+            profile, InferredType.UNKNOWN, reason, warnings=(LOCALE_NUMBER_WARNING,)
+        )
+    return None
+
+
 def _infer_text_or_object(
     series: pd.Series, profile: ColumnProfile, n_unique: int, thresholds: InferenceThresholds
 ) -> ColumnTypeInference:
@@ -220,24 +353,32 @@ def _infer_text_or_object(
             )
             return _result(profile, InferredType.BOOLEAN, reason)
 
+    # With at most two distinct values the counts are exact; otherwise use the sample.
+    exact = n_unique <= 2
+    sample = non_null if exact else _sample_values(non_null, thresholds.sample_size)
+    sample_evidence: dict[str, int | float] = (
+        {"sample_size": len(sample), "population": len(non_null)}
+        if len(non_null) > len(sample)
+        else {}
+    )
+
+    counts = sample.value_counts()
+    numbers = _infer_number_text(profile, n_unique, counts, sample_evidence, thresholds)
+    if numbers is not None:
+        return numbers
+
     unique_ratio = n_unique / n_non_missing
-    if (
-        unique_ratio >= thresholds.identifier_min_unique_ratio
-        and n_non_missing >= thresholds.identifier_min_rows
-    ):
-        sample = _sample_values(non_null, thresholds.sample_size)
+    if _meets_identifier_counts(unique_ratio, n_non_missing, thresholds):
         whitespace_ratio = float(sample.str.contains(r"\s", regex=True).mean())
         if whitespace_ratio == 0:
-            evidence: dict[str, int | float] = {
-                "n_unique": n_unique,
-                "n_non_missing": n_non_missing,
-                "unique_ratio": unique_ratio,
-                "whitespace_ratio": whitespace_ratio,
-            }
-            if len(non_null) > len(sample):
-                evidence["sample_size"] = len(sample)
-                evidence["population"] = len(non_null)
-            reason = Reason.create(ReasonCode.TEXT_IDENTIFIER_LIKE, **evidence)
+            reason = Reason.create(
+                ReasonCode.TEXT_IDENTIFIER_LIKE,
+                n_unique=n_unique,
+                n_non_missing=n_non_missing,
+                unique_ratio=unique_ratio,
+                whitespace_ratio=whitespace_ratio,
+                **sample_evidence,
+            )
             return _result(profile, InferredType.TEXT, reason, RoleHint.IDENTIFIER_CANDIDATE)
 
     evidence_counts = {
@@ -245,10 +386,7 @@ def _infer_text_or_object(
         "n_non_missing": n_non_missing,
         "unique_ratio": unique_ratio,
     }
-    if (
-        n_unique <= thresholds.categorical_max_unique
-        and unique_ratio <= thresholds.categorical_max_unique_ratio
-    ):
+    if _is_categorical(n_unique, unique_ratio, thresholds):
         reason = Reason.create(ReasonCode.FEW_REPEATED_VALUES, **evidence_counts)
         return _result(profile, InferredType.CATEGORICAL, reason)
     reason = Reason.create(ReasonCode.FREE_TEXT_FALLBACK, **evidence_counts)

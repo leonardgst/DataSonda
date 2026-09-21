@@ -73,6 +73,48 @@ CASES = [
     ),
     (pd.Series([f"v{i}" for i in uniques(10, 100)]), T.CATEGORICAL, None, R.FEW_REPEATED_VALUES),
     (pd.Series([f"v{i}" for i in uniques(200, 400)]), T.TEXT, None, R.FREE_TEXT_FALLBACK),
+    (
+        pd.Series([f"{i:05d}" for i in uniques(40, 500)]),
+        T.CATEGORICAL,
+        RoleHint.CODE_CANDIDATE,
+        R.NUMERIC_LOOKING_LEADING_ZEROS,
+    ),
+    (pd.Series(["1,5", "2,25", "3,75"] * 10), T.UNKNOWN, None, R.NUMERIC_LOCALE_FORMAT),
+]
+
+# Numbers stored as text: (series, type, role, [reason codes]). NUMERIC_TEXT comes first.
+NUMBER_TEXT_CASES = [
+    (
+        pd.Series([f"{i}.5" for i in range(30)]),
+        T.NUMERIC_CONTINUOUS,
+        None,
+        [R.NUMERIC_TEXT, R.NON_INTEGER_NUMBERS],
+    ),
+    (
+        pd.Series([str(i) for i in uniques(5, 60)]),
+        T.NUMERIC_DISCRETE,
+        None,
+        [R.NUMERIC_TEXT, R.INTEGER_FEW_DISTINCT],
+    ),
+    (
+        pd.Series([str(i) for i in uniques(100, 300)]),
+        T.NUMERIC_CONTINUOUS,
+        None,
+        [R.NUMERIC_TEXT, R.INTEGER_MANY_DISTINCT],
+    ),
+    (
+        pd.Series([str(1000 + i) for i in range(30)]),
+        T.NUMERIC_DISCRETE,
+        RoleHint.IDENTIFIER_CANDIDATE,
+        [R.NUMERIC_TEXT, R.INTEGER_UNIQUE_IDENTIFIER],
+    ),
+    (pd.Series(["0", "1"] * 10), T.BOOLEAN, None, [R.NUMERIC_TEXT, R.BINARY_0_1]),
+    (
+        pd.Series(["-5", "+7", "12", "3.5"] * 10),
+        T.NUMERIC_CONTINUOUS,
+        None,
+        [R.NUMERIC_TEXT, R.NON_INTEGER_NUMBERS],
+    ),
 ]
 
 
@@ -84,21 +126,26 @@ def test_case_catalogue(
     assert result.inferred_type is expected_type
     assert result.role_hint is expected_role
     assert [reason.code for reason in result.reasons] == [code]
-    assert result.warnings == ()
+    assert bool(result.warnings) is (code is R.NUMERIC_LOCALE_FORMAT)
     assert result.overridden is False
+
+
+@pytest.mark.parametrize(("series", "expected_type", "expected_role", "codes"), NUMBER_TEXT_CASES)
+def test_number_text_catalogue(
+    series: pd.Series, expected_type: T, expected_role: RoleHint | None, codes: list[R]
+) -> None:
+    result = infer(series)
+    assert result.inferred_type is expected_type
+    assert result.role_hint is expected_role
+    assert [reason.code for reason in result.reasons] == codes
+    assert result.warnings == ()
 
 
 def test_catalogue_covers_every_reason_code_used_by_this_step() -> None:
     covered = {case[3] for case in CASES}
-    not_yet_used = {
-        R.USER_OVERRIDE,
-        R.DATETIME_TEXT_FORMAT,
-        R.DATETIME_TEXT_AMBIGUOUS,
-        R.DATETIME_TEXT_CONFLICT,
-        R.NUMERIC_TEXT,
-        R.NUMERIC_LOCALE_FORMAT,
-        R.NUMERIC_LOOKING_LEADING_ZEROS,
-    }
+    covered |= {code for case in NUMBER_TEXT_CASES for code in case[3]}
+    covered |= {R.USER_OVERRIDE}  # covered by the override tests
+    not_yet_used = {R.DATETIME_TEXT_FORMAT, R.DATETIME_TEXT_AMBIGUOUS, R.DATETIME_TEXT_CONFLICT}
     assert set(R) - not_yet_used == covered
 
 
@@ -262,6 +309,165 @@ def test_sample_size_is_recorded_only_when_a_sample_is_used() -> None:
     assert "population" not in evidence(whole)
 
 
+# --- Numbers stored as text ----------------------------------------------------------------
+
+
+def codes(result: ColumnTypeInference) -> list[R]:
+    return [reason.code for reason in result.reasons]
+
+
+def evidence_of(result: ColumnTypeInference, code: R) -> dict[str, Any]:
+    return next(dict(reason.evidence) for reason in result.reasons if reason.code is code)
+
+
+def test_leading_zero_codes_are_never_numbers() -> None:
+    result = infer(pd.Series(["00123", "01000"] * 15))
+    assert result.inferred_type is T.CATEGORICAL
+    assert result.role_hint is RoleHint.CODE_CANDIDATE
+    assert codes(result) == [R.NUMERIC_LOOKING_LEADING_ZEROS]
+
+
+def test_unique_leading_zero_codes_are_text_identifiers() -> None:
+    result = infer(pd.Series([f"{i:05d}" for i in range(30)]))
+    assert result.inferred_type is T.TEXT
+    assert result.role_hint is RoleHint.IDENTIFIER_CANDIDATE
+    assert codes(result) == [R.NUMERIC_LOOKING_LEADING_ZEROS]
+
+
+def test_many_repeated_leading_zero_codes_are_text_with_code_hint() -> None:
+    result = infer(pd.Series([f"{i:05d}" for i in uniques(200, 400)]))
+    assert result.inferred_type is T.TEXT
+    assert result.role_hint is RoleHint.CODE_CANDIDATE
+
+
+def test_leading_zero_ratio_evidence() -> None:
+    result = infer(pd.Series(["007", "8", "9", "10"] * 10))
+    data = evidence(result)
+    assert data["leading_zero_ratio"] == 0.25
+    assert data["parse_ratio"] == 1.0
+
+
+@pytest.mark.parametrize("values", [["0", "0.5", "10"], ["0", "10", "20"], ["-0.5", "0.25", "3"]])
+def test_zero_or_decimal_starting_with_zero_is_not_a_leading_zero_code(values: list[str]) -> None:
+    result = infer(pd.Series(values * 10))
+    assert R.NUMERIC_LOOKING_LEADING_ZEROS not in codes(result)
+    assert R.NUMERIC_TEXT in codes(result)
+
+
+def test_leading_zeros_in_a_mostly_textual_column_do_not_make_it_numeric() -> None:
+    result = infer(pd.Series(["007", "008"] + ["word"] * 98))
+    assert codes(result) == [R.FEW_REPEATED_VALUES]
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        ["1,5", "2,25", "10,125"],
+        ["1 234", "12 345", "123 456 789"],
+        ["1 234", "12 345"],
+        ["1 234", "12 345"],
+        ["1,234", "12,345,678"],
+        ["1,234.56", "1 234,56"],
+    ],
+)
+def test_locale_formats_are_reported_and_never_converted(values: list[str]) -> None:
+    result = infer(pd.Series(values * 10))
+    assert result.inferred_type is T.UNKNOWN
+    assert result.role_hint is None
+    assert codes(result) == [R.NUMERIC_LOCALE_FORMAT]
+    assert result.warnings == (
+        "values look numeric with locale-specific separators: not converted",
+    )
+
+
+def test_canonical_wins_when_it_reaches_the_threshold() -> None:
+    result = infer(pd.Series([str(i) for i in range(96)] + ["1,5"] * 4))
+    assert R.NUMERIC_TEXT in codes(result)
+    assert result.warnings == ()
+
+
+def test_canonical_and_locale_together_reach_the_threshold() -> None:
+    result = infer(pd.Series([str(i) for i in range(50)] + [f"{i},5" for i in range(50)]))
+    assert codes(result) == [R.NUMERIC_LOCALE_FORMAT]
+    data = evidence(result)
+    assert data["parse_ratio"] == 0.5
+    assert data["locale_ratio"] == 0.5
+
+
+def test_locale_values_mixed_with_words_are_plain_text() -> None:
+    result = infer(pd.Series(["1,5"] * 90 + ["abc"] * 10))
+    assert codes(result) == [R.FEW_REPEATED_VALUES]
+    assert result.warnings == ()
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        [" 1", " 2"],  # no strip: a leading space is not canonical
+        ["1e5", "2e6"],
+        ["0x1F", "0x2A"],
+        ["1.", ".5"],
+        ["١٢٣", "٤٥٦"],  # non-ASCII digits
+    ],
+)
+def test_non_canonical_number_like_strings_stay_text(values: list[str]) -> None:
+    result = infer(pd.Series(values * 10))
+    assert codes(result) == [R.FEW_REPEATED_VALUES]
+
+
+@pytest.mark.parametrize(("numeric", "recognised"), [(89, False), (90, True), (91, True)])
+def test_text_parse_min_ratio_boundary(numeric: int, recognised: bool) -> None:
+    series = pd.Series([str(i) for i in range(numeric)] + ["N/A"] * (100 - numeric))
+    result = infer(series, thresholds=InferenceThresholds(text_parse_min_ratio=0.9))
+    assert (R.NUMERIC_TEXT in codes(result)) is recognised
+
+
+@pytest.mark.parametrize(("numeric", "recognised"), [(94, False), (95, True)])
+def test_default_tolerance_is_five_percent(numeric: int, recognised: bool) -> None:
+    series = pd.Series([str(i) for i in range(numeric)] + ["N/A"] * (100 - numeric))
+    assert (R.NUMERIC_TEXT in codes(infer(series))) is recognised
+
+
+def test_two_distinct_values_use_exact_counts_without_sampling() -> None:
+    series = pd.Series(["1"] * 2990 + ["x"] * 10)
+    result = infer(series)
+    data = evidence_of(result, R.NUMERIC_TEXT)
+    assert data == {"parse_ratio": pytest.approx(2990 / 3000)}
+    assert result.inferred_type is T.NUMERIC_DISCRETE
+
+
+def test_sample_evidence_is_recorded_for_sampled_numbers() -> None:
+    result = infer(pd.Series([str(i) for i in range(3000)]))
+    assert evidence_of(result, R.NUMERIC_TEXT) == {
+        "parse_ratio": 1.0,
+        "population": 3000,
+        "sample_size": 1000,
+    }
+
+
+def test_number_text_parse_ratio_is_pinned_across_pandas_versions() -> None:
+    # Recorded under pandas 3.0.6 and 2.3.3 (identical). The true share on all 5000
+    # values is 0.923: the difference comes from the deterministic sample.
+    series = pd.Series(["x" if i % 13 == 0 else str(i) for i in range(5000)], dtype=object)
+    result = infer(series, thresholds=InferenceThresholds(text_parse_min_ratio=0.9))
+    assert evidence_of(result, R.NUMERIC_TEXT) == {
+        "parse_ratio": 0.927,
+        "population": 5000,
+        "sample_size": 1000,
+    }
+
+
+def test_override_keeps_the_automatic_warnings() -> None:
+    result = infer(pd.Series(["1,5", "2,25"] * 10), override="numeric_continuous")
+    assert result.inferred_type is T.NUMERIC_CONTINUOUS
+    assert result.overridden is True
+    assert codes(result) == [R.USER_OVERRIDE]
+    assert evidence(result) == {"automatic_type": "unknown"}
+    assert result.warnings == (
+        "values look numeric with locale-specific separators: not converted",
+    )
+
+
 # --- Overrides -----------------------------------------------------------------------------
 
 
@@ -399,12 +605,21 @@ def test_no_cell_value_in_results() -> None:
     assert "SECRET_VALUE" not in json.dumps(result.to_dict(), allow_nan=False)
 
 
-INVARIANT_SERIES = [case[0] for case in CASES] + [
-    pd.Series(range(500)),
-    pd.Series([f"id_{i}" for i in range(500)]),
-    pd.Series([float(i) for i in range(50)] + [None]),
-    pd.Series(["a", None, "b"] * 20),
-]
+INVARIANT_SERIES = (
+    [case[0] for case in CASES]
+    + [case[0] for case in NUMBER_TEXT_CASES]
+    + [
+        pd.Series(range(500)),
+        pd.Series([f"id_{i}" for i in range(500)]),
+        pd.Series([float(i) for i in range(50)] + [None]),
+        pd.Series(["a", None, "b"] * 20),
+        pd.Series([f"{i:05d}" for i in range(30)]),
+        pd.Series(["1 234", "2 345"] * 20),
+    ]
+)
+
+# Evidence strings must come from closed catalogues, never from cell values.
+CLOSED_STRING_EVIDENCE = {"family", "automatic_type", "vocabulary", "dominant_type"}
 
 
 @pytest.mark.parametrize("series", INVARIANT_SERIES)
@@ -416,10 +631,13 @@ def test_invariants(series: pd.Series) -> None:
     assert isinstance(result.inferred_type, InferredType)
     assert result.reasons
     if result.role_hint is RoleHint.IDENTIFIER_CANDIDATE:
-        data = evidence(result)
+        all_evidence = [dict(reason.evidence) for reason in result.reasons]
+        data = next(item for item in all_evidence if "unique_ratio" in item)
         assert data["unique_ratio"] >= thresholds.identifier_min_unique_ratio
         assert data["n_non_missing"] >= thresholds.identifier_min_rows
     for reason in result.reasons:
-        assert all(isinstance(key, str) for key, _ in reason.evidence)
+        for key, value in reason.evidence:
+            if isinstance(value, str):
+                assert key in CLOSED_STRING_EVIDENCE
     json.dumps(result.to_dict(), allow_nan=False)
     pd.testing.assert_series_equal(series, before)
