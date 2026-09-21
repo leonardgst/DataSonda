@@ -5,6 +5,47 @@ significative, du plus récent au plus ancien. Ne pas détailler ici le
 "comment" (c'est dans le code et les commits) — se concentrer sur le
 "quoi" et le "pourquoi" des décisions.
 
+## Phase 2 bis — Rapport minimal (tranche verticale)
+
+- **2026-09-21** — `analyze(df)` renvoie un `Report` ; `report.export("x.html")`
+  et `report.export("x.json")` écrivent un rapport HTML autonome et un JSON
+  strict. Démo de bout en bout : `examples/demo.py` (dataset synthétique de
+  500 lignes). Quatre commits : rendu HTML, `analyze`/`Report` + README,
+  démo, docs.
+  - **Changement de feuille de route :** le rendu HTML (prévu en Phase 8) est
+    avancé sous forme minimale, pour disposer d'une démo de bout en bout avant
+    un entretien. Il ne consomme que `DatasetProfile.to_dict()`, déjà
+    existant : le calcul ne change pas. Le rapport complet, les graphiques,
+    Jinja2 et le schéma JSON versionné restent à leur place. La Phase 3
+    (inférence de types) est décalée d'autant.
+  - Décision : façade provisoire (tant que la version est `0.1.0.dev0`) :
+    `analyze(data, *, name=None)`, `Report` (dataclass frozen), exports de
+    `__init__.py` avec `__all__`. `_version.py` évite l'import circulaire ;
+    alternative écartée : `importlib.metadata` (dépend de l'installation).
+  - Décision : `export` déduit le format de l'extension (insensible à la
+    casse) ; extension inconnue = `ValueError` avant toute écriture ;
+    écrasement silencieux (comme pandas), dossiers non créés ; UTF-8 sans BOM
+    et `\n`, pour des fichiers identiques octet pour octet sur toute
+    plateforme.
+  - Décision : rendu HTML par une fonction pure de la bibliothèque standard.
+    Alternative écartée : Jinja2 (nouvelle dépendance, à réserver au rapport
+    complet).
+  - Décision : sécurité par construction. Tout texte dynamique est échappé ;
+    ni script, ni ressource externe (CSP en défense en profondeur) ; aucune
+    valeur de cellule dans le HTML ni dans le JSON ; pas d'horodatage.
+  - Décision : le rapport présente des faits (aucun verdict, aucune colonne
+    « problématique ») et affiche ses limites dans une section dédiée.
+  - Correction du README : placeholder d'URL remplacé par le vrai dépôt ;
+    nom « DataSonda » pour le projet (le package Python reste `datasonde`) ;
+    « Planned usage » remplacé par un usage réel.
+  - Hors périmètre volontaire : chargement CSV, nouvelles analyses,
+    statistiques, inférence de types, alertes, graphiques, JavaScript, CLI,
+    schéma JSON versionné, `pyproject.toml`/CI inchangés.
+  - Vérifié : 142 tests réussis et 3 ignorés (145 collectés) sous pandas 3.0.6
+    et sous pandas 2.3.3, ruff et mypy verts ; snippet du README et démo
+    exécutés pour de vrai ; `profile.py`, `metadata.py`, `models.py` et
+    `uv.lock` inchangés, aucune dépendance ajoutée.
+
 ## Correctif post-revue de la Phase 2
 
 - **2026-09-21** — Une colonne Arrow imbriquée (`list`, `struct`, `map`) faisait
