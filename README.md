@@ -43,15 +43,36 @@ version is `0.1.0.dev0`.
 
 ### What the report contains
 
-For each column: its technical family (numeric, boolean, datetime, categorical,
-text_or_object, other), pandas dtype, memory, missing values (count and share), distinct
-values and warnings. The HTML report is a single standalone page (no script, no external
-resource) and shows facts only. No raw cell value is ever written to the report.
+For each column, two kinds of information, kept apart:
+
+- **Measured facts**: technical family (numeric, boolean, datetime, categorical,
+  text_or_object, other), pandas dtype, memory, missing values (count and share),
+  distinct values and warnings.
+- **Inferred interpretation** (columns marked "(inferred)" in the HTML report, and the
+  `type_inference` key of the JSON): a statistical type (`numeric_continuous`,
+  `numeric_discrete`, `categorical`, `boolean`, `datetime`, `text` or `unknown`), an
+  optional role hint (`identifier_candidate`, `code_candidate`), and the reasons with
+  the numbers that triggered each rule. It also detects booleans stored as text
+  (yes/no), numbers stored as text and dates stored as text. Nothing is converted, and
+  `unknown` is a legitimate answer.
+
+The HTML report is a single standalone page (no script, no external resource). No raw
+cell value is ever written to the report.
 
 ### Limits
 
-- Families come from the pandas dtype: there is no type or role inference yet (a
-  boolean column containing nulls appears as `text_or_object`).
+- Inferred types and role hints are heuristic suggestions from documented rules and
+  thresholds (see `src/datasonde/inference.py`), computed on a deterministic sample of
+  bounded size. They are not facts.
+- Numeric codes stored as integers cannot be told apart from real measurements. A manual
+  override exists at function level (`datasonde.inference.infer_types`), not yet in
+  `analyze`.
+- Date formats are never guessed: when day and month cannot be told apart, the report
+  shows a warning instead of a choice. Only day-first/month-first and ISO-like formats
+  from a closed list are recognised, within the years 1677 to 2262; two-digit years,
+  month names and time zones are not. Numbers with regional separators (`1 234,5`) are
+  reported as `unknown`, never converted.
+- Constant and nearly empty columns are not flagged yet.
 - "Missing" means a pandas null only: empty strings, `"N/A"` and other sentinels are
   not counted.
 - No quality alerts, univariate statistics or charts yet.

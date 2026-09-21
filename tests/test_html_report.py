@@ -2,18 +2,22 @@
 
 import json
 from html.parser import HTMLParser
+from typing import Any
 
 import pandas as pd
 import pytest
 
 from datasonde.html_report import (
+    INFERRED_NOTE,
     LIMITS_HEADING,
     WARNINGS_HEADING,
     bar_width,
     format_bytes,
+    format_evidence,
     format_percent,
     render_html,
 )
+from datasonde.inference import infer_types
 from datasonde.profile import profile_dataframe
 
 VERSION = "9.9.9-test"
@@ -247,6 +251,135 @@ def test_bar_is_decorative_and_text_carries_the_value(sample_df: pd.DataFrame) -
     assert 'class="bar" aria-hidden="true"' in page
     assert "<caption>" in page
     assert 'scope="col"' in page
+
+
+# --- Type inference columns ---------------------------------------------------------------
+
+
+def render_inferred(
+    df: pd.DataFrame, name: str | None = None, overrides: dict[str, str] | None = None
+) -> str:
+    profile = profile_dataframe(df)
+    inference = infer_types(df, profile, overrides=overrides)
+    return render_html(profile, name=name, version=VERSION, inference=inference)
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (None, "none"),
+        (True, "true"),
+        (False, "false"),
+        (1, "1"),
+        (1.0, "1"),
+        (0.5, "0.5"),
+        (0.92734, "0.9273"),
+        (1 / 3, "0.3333"),
+        ("dmy_slash", "dmy_slash"),
+    ],
+)
+def test_format_evidence(value: Any, expected: str) -> None:
+    assert format_evidence(value) == expected
+
+
+def test_inferred_columns_are_added_after_the_facts(sample_df: pd.DataFrame) -> None:
+    plain = parse(render(sample_df)).rows
+    inferred = parse(render_inferred(sample_df)).rows
+    assert all(len(row) == 7 for row in plain)
+    assert all(len(row) == 10 for row in inferred)
+    assert [row[:7] for row in inferred] == plain  # the measured facts do not move
+
+
+def test_inferred_cells_show_type_role_and_numbers() -> None:
+    df = pd.DataFrame({"id": range(30), "score": [i * 1.5 for i in range(30)]})
+    rows = {row[0]: row for row in parse(render_inferred(df)).rows}
+    assert rows["id"][7:9] == ["numeric_discrete", "identifier_candidate"]
+    assert "integer_unique_identifier" in rows["id"][9]
+    assert "unique_ratio=1" in rows["id"][9]
+    assert rows["score"][7:9] == ["numeric_continuous", "-"]
+
+
+def test_inferred_note_and_headers_only_with_inference(sample_df: pd.DataFrame) -> None:
+    with_inference = render_inferred(sample_df)
+    without = render(sample_df)
+    assert INFERRED_NOTE in [t.strip() for t in parse(with_inference).texts]
+    assert "(inferred)" not in without
+    assert "Type (inferred)" in with_inference
+
+
+def test_inference_warnings_join_the_warnings_section_with_escaped_names() -> None:
+    hostile = "<b>1,5</b>"
+    df = pd.DataFrame({hostile: ["1,5", "2,25"] * 10})
+    page = render_inferred(df)
+    parsed = parse(page)
+    assert WARNINGS_HEADING in parsed.headings
+    assert hostile not in page
+    assert any(
+        text.strip() == f"{hostile}: values look numeric with locale-specific separators: "
+        "not converted"
+        for text in parsed.texts
+    )
+
+
+def test_no_warnings_section_when_neither_profile_nor_inference_warns(
+    sample_df: pd.DataFrame,
+) -> None:
+    assert WARNINGS_HEADING not in parse(render_inferred(sample_df)).headings
+
+
+def test_limits_mention_inference_only_when_it_is_shown(sample_df: pd.DataFrame) -> None:
+    without = " ".join(parse(render(sample_df)).texts)
+    with_inference = " ".join(parse(render_inferred(sample_df)).texts)
+    assert "no type or role inference" not in without
+    assert "heuristic suggestions" not in without
+    assert "heuristic suggestions" in with_inference
+    assert "cannot be told apart from real measurements" in with_inference
+    assert "never guessed" in with_inference
+    assert "not flagged yet" in with_inference
+    assert "no type or role inference" not in with_inference
+    assert "no quality alerts" in with_inference.lower()
+
+
+def test_user_override_is_marked() -> None:
+    df = pd.DataFrame({"code": range(30)})
+    rows = parse(render_inferred(df, overrides={"code": "categorical"})).rows
+    assert rows[0][7] == "categorical (user override)"
+    assert "user_override" in rows[0][9]
+
+
+def test_evidence_is_escaped_exactly_once() -> None:
+    # A Python type name is one of the few free strings allowed in evidence.
+    odd = type("A&B<img src=x>", (), {})
+    df = pd.DataFrame({"objects": [odd(), odd(), odd()]})
+    page = render_inferred(df)
+    assert "A&amp;B&lt;img src=x&gt;" in page
+    assert "&amp;amp;" not in page
+    assert "<img src=x>" not in page
+    cell = parse(page).rows[0][9]
+    assert "dominant_type=A&B<img src=x>" in cell  # read back exactly, no double escaping
+
+
+def test_inference_page_is_safe_and_deterministic() -> None:
+    df = pd.DataFrame(
+        {
+            "ids": [f"SECRET_VALUE_{i}" for i in range(30)],
+            "tags": [[f"SECRET_VALUE_{i}"] for i in range(30)],
+            "mixed": [f"SECRET_VALUE_{i}" if i % 2 else i for i in range(30)],
+        }
+    )
+    page = render_inferred(df, name="d")
+    assert "SECRET_VALUE" not in page
+    assert "<script" not in page.lower()
+    assert "http://" not in page
+    assert "https://" not in page
+    assert page == render_inferred(df, name="d")
+
+
+def test_inference_with_zero_rows_and_many_columns() -> None:
+    empty = pd.DataFrame({"a": pd.Series([], dtype="float64")})
+    assert "all_missing" in parse(render_inferred(empty)).rows[0][9]
+    wide = pd.DataFrame({f"c{i}": [i] for i in range(200)})
+    assert len(parse(render_inferred(wide)).rows) == 200
 
 
 # --- Determinism --------------------------------------------------------------------------
