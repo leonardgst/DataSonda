@@ -52,6 +52,55 @@ def test_demo_dataframe_shape_and_profile(demo: ModuleType) -> None:
     } <= families
 
 
+EXPECTED_INFERENCE = {
+    # column: (inferred type, role hint)
+    "customer_id": ("numeric_discrete", "identifier_candidate"),
+    "age": ("numeric_continuous", None),
+    "country": ("categorical", None),
+    "signup_date": ("datetime", None),
+    "is_premium": ("boolean", None),
+    "notes": ("text", None),
+    "source": ("categorical", None),
+    "tags": ("unknown", None),
+    "revenue_€": ("numeric_continuous", None),
+    "zip_code": ("categorical", "code_candidate"),
+    "newsletter": ("boolean", None),
+    "last_login": ("datetime", None),
+    "opt_in": ("boolean", None),
+}
+
+
+def test_demo_dataframe_has_the_expected_columns_in_order(demo: ModuleType) -> None:
+    assert list(demo.build_demo_dataframe().columns) == list(EXPECTED_INFERENCE)
+
+
+def test_demo_type_inference(demo: ModuleType) -> None:
+    inference = analyze(demo.build_demo_dataframe()).inference
+    assert inference is not None
+    actual = {
+        c.name: (c.inferred_type.value, None if c.role_hint is None else c.role_hint.value)
+        for c in inference.columns
+    }
+    assert actual == EXPECTED_INFERENCE
+
+
+def test_demo_dates_and_codes_are_not_guessed(demo: ModuleType) -> None:
+    inference = analyze(demo.build_demo_dataframe()).inference
+    assert inference is not None
+    by_name = {c.name: c for c in inference.columns}
+
+    last_login = by_name["last_login"]
+    assert last_login.warnings == ()
+    assert dict(last_login.reasons[0].evidence)["format"] == "dmy_slash"
+
+    zip_reason = by_name["zip_code"].reasons[0]
+    assert zip_reason.code.value == "numeric_looking_leading_zeros"
+    assert dict(zip_reason.evidence)["leading_zero_ratio"] > 0
+
+    demo_frame = demo.build_demo_dataframe()
+    assert demo_frame["zip_code"].str.startswith("0").any()  # codes are kept as text
+
+
 def test_main_writes_both_reports(demo: ModuleType, tmp_path: Path) -> None:
     output_dir = tmp_path / "out"
     demo.main(output_dir)

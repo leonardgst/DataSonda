@@ -1,6 +1,7 @@
 """Tests for analyze(), Report and export()."""
 
 import dataclasses
+import inspect
 import json
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,8 @@ import pytest
 
 import datasonde
 from datasonde import Report, __version__, analyze
+from datasonde.inference import infer_types
+from datasonde.models import InferenceThresholds
 from datasonde.profile import profile_dataframe
 
 
@@ -134,12 +137,21 @@ def _reject_constant(value: str) -> Any:
     raise AssertionError(f"non-strict JSON constant: {value}")
 
 
-def test_json_is_strict_and_has_the_three_keys(df: pd.DataFrame) -> None:
+def test_json_is_strict_and_has_the_four_keys(df: pd.DataFrame) -> None:
     report = analyze(df, name="demo")
     data = json.loads(report.to_json(), parse_constant=_reject_constant)
-    assert set(data) == {"datasonde_version", "dataset_name", "profile"}
+    assert set(data) == {"datasonde_version", "dataset_name", "profile", "type_inference"}
     assert data["datasonde_version"] == __version__
     assert data["profile"] == report.profile.to_dict()
+    assert data["type_inference"] == report.inference.to_dict()  # type: ignore[union-attr]
+
+
+def test_json_type_inference_carries_the_thresholds(df: pd.DataFrame) -> None:
+    data = json.loads(analyze(df).to_json(), parse_constant=_reject_constant)
+    inference = data["type_inference"]
+    assert inference["thresholds"] == InferenceThresholds().to_dict()
+    assert [c["name"] for c in inference["columns"]] == ["id", "revenue_€", "café"]
+    assert all(c["reasons"] for c in inference["columns"])
 
 
 def test_json_null_name_and_zero_rows_stay_strict() -> None:
@@ -159,6 +171,58 @@ def test_no_cell_value_in_json_or_html() -> None:
     report = analyze(pd.DataFrame({"a": ["SECRET_VALUE_123", "x"]}))
     assert "SECRET_VALUE_123" not in report.to_json()
     assert "SECRET_VALUE_123" not in report.to_html()
+
+
+def test_no_cell_value_with_type_inference_of_every_kind() -> None:
+    frame = pd.DataFrame(
+        {
+            "ids": [f"SECRET_VALUE_{i}" for i in range(30)],
+            "mixed": [f"SECRET_VALUE_{i}" if i % 2 else i for i in range(30)],
+            "few": [f"SECRET_VALUE_{i % 3}" for i in range(30)],
+            "vocab": ["SECRET_VALUE_A", "SECRET_VALUE_B"] * 15,
+            "free": [f"SECRET_VALUE {i}" for i in range(30)],
+            "lists": [[f"SECRET_VALUE_{i}"] for i in range(30)],
+        }
+    )
+    report = analyze(frame, name="d")
+    assert "SECRET_VALUE" not in report.to_json()
+    assert "SECRET_VALUE" not in report.to_html()
+
+
+# --- Type inference in the report ---------------------------------------------------------
+
+
+def test_analyze_computes_an_inference_consistent_with_the_profile(df: pd.DataFrame) -> None:
+    report = analyze(df)
+    assert report.inference is not None
+    assert [c.name for c in report.inference.columns] == [c.name for c in report.profile.columns]
+    assert report.inference == infer_types(df, report.profile)
+    assert report.inference.thresholds == InferenceThresholds()
+
+
+def test_analyze_signature_is_unchanged() -> None:
+    parameters = inspect.signature(analyze).parameters
+    assert list(parameters) == ["data", "name"]
+    assert parameters["name"].kind is inspect.Parameter.KEYWORD_ONLY
+
+
+def test_report_without_inference_stays_valid(df: pd.DataFrame) -> None:
+    report = Report(profile=profile_dataframe(df), name="d")
+    assert report.inference is None
+    assert report.to_dict()["type_inference"] is None
+    assert "(inferred)" not in report.to_html()
+    json.loads(report.to_json(), parse_constant=_reject_constant)
+
+
+def test_html_report_carries_the_inferred_columns(df: pd.DataFrame) -> None:
+    page = analyze(df).to_html()
+    for header in ("Type (inferred)", "Role hint (inferred)", "Reasons (inferred)"):
+        assert header in page
+
+
+def test_inference_report_is_deterministic(df: pd.DataFrame) -> None:
+    assert analyze(df, name="d").to_html() == analyze(df, name="d").to_html()
+    assert analyze(df, name="d").to_json() == analyze(df, name="d").to_json()
 
 
 # --- Public API ---------------------------------------------------------------------------

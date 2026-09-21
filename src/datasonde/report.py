@@ -11,7 +11,8 @@ from typing import Any
 
 from datasonde._version import __version__
 from datasonde.html_report import render_html
-from datasonde.models import DatasetProfile
+from datasonde.inference import infer_types
+from datasonde.models import DatasetProfile, DatasetTypeInference
 from datasonde.profile import profile_dataframe
 
 _SUPPORTED_EXTENSIONS = (".html", ".json")
@@ -19,24 +20,29 @@ _SUPPORTED_EXTENSIONS = (".html", ".json")
 
 @dataclass(frozen=True)
 class Report:
-    """The result of :func:`analyze`: a dataset profile and an optional dataset name.
+    """The result of :func:`analyze`: a dataset profile, its type inference and a name.
 
-    The API is provisional while the version is ``0.1.0.dev0``.
+    ``profile`` holds measured facts; ``inference`` holds interpretations derived from
+    documented rules (it is ``None`` when the report was built without one). The API is
+    provisional while the version is ``0.1.0.dev0``.
     """
 
     profile: DatasetProfile
     name: str | None = None
+    inference: DatasetTypeInference | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Return the JSON-serializable form of the report.
 
-        The format is provisional and not versioned until the dedicated JSON schema
-        phase: keys may change without notice before then.
+        ``type_inference`` (with the thresholds used) is ``None`` when there is no
+        inference. The format is provisional and not versioned until the dedicated JSON
+        schema phase: keys may change without notice before then.
         """
         return {
             "datasonde_version": __version__,
             "dataset_name": self.name,
             "profile": self.profile.to_dict(),
+            "type_inference": None if self.inference is None else self.inference.to_dict(),
         }
 
     def to_json(self, *, indent: int | None = 2) -> str:
@@ -48,7 +54,9 @@ class Report:
 
     def to_html(self) -> str:
         """Return the report as a standalone HTML page (no script, no external resource)."""
-        return render_html(self.profile, name=self.name, version=__version__)
+        return render_html(
+            self.profile, name=self.name, version=__version__, inference=self.inference
+        )
 
     def export(self, path: str | os.PathLike[str]) -> Path:
         """Write the report to ``path`` and return the written :class:`~pathlib.Path`.
@@ -75,10 +83,11 @@ class Report:
 
 
 def analyze(data: Any, *, name: str | None = None) -> Report:
-    """Profile a DataFrame and return a :class:`Report`.
+    """Profile a DataFrame, infer the type of each column and return a :class:`Report`.
 
-    ``name`` is an optional dataset name shown in the report. The API is provisional
-    while the version is ``0.1.0.dev0``.
+    The type inference uses the default thresholds and no manual override. ``name`` is
+    an optional dataset name shown in the report. The API is provisional while the
+    version is ``0.1.0.dev0``.
 
     Raises:
         TypeError: ``name`` is not a ``str`` or ``None``, or ``data`` is not a DataFrame.
@@ -86,4 +95,5 @@ def analyze(data: Any, *, name: str | None = None) -> Report:
     """
     if name is not None and not isinstance(name, str):
         raise TypeError(f"name must be a str or None, got {type(name).__name__}")
-    return Report(profile=profile_dataframe(data), name=name)
+    profile = profile_dataframe(data)
+    return Report(profile=profile, name=name, inference=infer_types(data, profile))

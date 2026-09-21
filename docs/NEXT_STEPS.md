@@ -4,11 +4,8 @@ _Dernière mise à jour : 2026-09-21_
 
 ## Phase en cours
 
-Phase 2 bis — Rapport minimal (tranche verticale : `analyze()`, export HTML et
-JSON, démo), intercalée avant la Phase 3 pour disposer d'une démo de bout en
-bout. Implémentée sur la branche `feat/minimal-report` (4 commits, pas encore
-poussée ni mergée). La Phase 2 et son correctif post-revue sont mergés dans
-`main` (PR #3 et PR #4).
+Phase 3 — Inférence de types : implémentée. Aucune phase en développement :
+la Phase 4 (qualité) est à cadrer avec toi avant de coder.
 
 ## Ce qui est fait
 
@@ -22,7 +19,7 @@ poussée ni mergée). La Phase 2 et son correctif post-revue sont mergés dans
 - Hygiène du packaging (7 commits, entre Phase 1 et Phase 2) : sdist
   restreint, auteur, encodage UTF-8, `py.typed`, mypy sans `python_version`,
   CI en matrice Python 3.11/3.12/3.13 + étape pandas 2.x (détails dans le
-  CHANGELOG). Mergé via la PR #1, CI verte
+  CHANGELOG)
 - Phase 2 : `profile.py` (`classify_dtype`, `profile_column`,
   `profile_dataframe`), `DtypeFamily`, `ColumnProfile` et `DatasetProfile`
   dans `models.py` ; correctif de validation des noms de colonnes qui
@@ -31,8 +28,7 @@ poussée ni mergée). La Phase 2 et son correctif post-revue sont mergés dans
   (`"n_unique not computed: unhashable values"`) des types non supportés
   (`"n_unique not computed: unsupported dtype"`). Suite locale : 75 tests
   collectés, dont 3 ignorés sans `pyarrow` (72 exécutés) ; les 75 passent
-  avec `pyarrow` installé temporairement, sous pandas 3 et pandas 2. Mergé
-  via la PR #4
+  avec `pyarrow` installé temporairement, sous pandas 3 et pandas 2
 - Phase 2 bis : `analyze(df, name=None)` → `Report` (`to_dict`, `to_json`,
   `to_html`, `export`), rendu HTML autonome dans `html_report.py`,
   `_version.py`, façade `__init__.py` (`analyze`, `Report`, `__version__`),
@@ -43,13 +39,26 @@ poussée ni mergée). La Phase 2 et son correctif post-revue sont mergés dans
   (145 collectés), sous pandas 3.0.6 et sous pandas 2.3.3 ; ruff et mypy verts.
   Le snippet du README et `uv run python examples/demo.py` ont été exécutés
   pour de vrai
+- Phase 3 : `inference.py` (`infer_types`, `infer_column_type`) ; modèles
+  `InferredType`, `RoleHint`, `ReasonCode`, `Reason`, `InferenceThresholds`,
+  `ColumnTypeInference`, `DatasetTypeInference` dans `models.py`. Types
+  inférés, indice de rôle, raisons chiffrées et avertissements ; reconnaît les
+  booléens en texte, les nombres en texte, les codes à zéros initiaux et les
+  dates en texte sans jamais deviner un format. Intégrée à `analyze`
+  (`Report.inference`), au JSON (`type_inference`) et au HTML (colonnes
+  « (inferred) ») ; la démo compte 13 colonnes. `profile.py`, `metadata.py`,
+  `ColumnProfile` et `DatasetProfile` inchangés, aucune dépendance ajoutée
+- Vérifications locales de la Phase 3 : 474 tests réussis et 3 ignorés
+  (477 collectés), sous pandas 3.0.6 et sous pandas 2.3.3 ; ruff et mypy
+  verts. Le snippet du README et la démo ont été exécutés pour de vrai.
+  Mesure ponctuelle : `infer_types` ≈ 0,25 s pour 1 million de lignes et
+  6 colonnes (pandas 3.0.6)
 
 ## En cours / à vérifier
 
-- Pousser la branche `feat/minimal-report`, ouvrir la PR et confirmer que la CI
-  est verte (matrice 3.11/3.12/3.13 + étape pandas 2.x)
 - Ouvrir `examples/output/customers_demo.html` dans un navigateur pour un
-  contrôle visuel (non fait par Claude)
+  contrôle visuel, colonnes « (inferred) » comprises (non fait par Claude)
+- Valider les seuils par défaut de l'inférence sur de vrais datasets
 
 ## Décisions actées
 
@@ -75,28 +84,68 @@ poussée ni mergée). La Phase 2 et son correctif post-revue sont mergés dans
 - Rendu HTML : bibliothèque standard uniquement (pas de Jinja2), tout texte
   dynamique échappé, aucun script ni ressource externe, aucune valeur de
   cellule, aucun horodatage (même entrée = mêmes octets)
+- Inférence de types : fait contre interprétation (le profil est la vérité
+  mesurée) ; pas de score de confiance ; `unknown` est légitime ; jamais de
+  devinette silencieuse (ambiguïté = avertissement) ; aucune conversion ni
+  modification des données ; aucune valeur de cellule dans les résultats
+- Types inférés : `numeric_continuous`, `numeric_discrete`, `categorical`,
+  `boolean`, `datetime`, `text`, `unknown`. Rôles : `identifier_candidate`,
+  `code_candidate` (un identifiant garde un type PLUS un rôle). Un flottant
+  non entier n'est jamais un identifiant
+- Seuils par défaut (`InferenceThresholds`, configurables et validés) :
+  identifiant = ratio d'unicité ≥ 0,99 et ≥ 20 valeurs non manquantes ;
+  entier discret ≤ 20 valeurs distinctes ; catégoriel ≤ 50 valeurs et ratio ≤
+  0,5 ; reconnaissance de nombres et dates en texte ≥ 0,95 de l'échantillon ;
+  échantillon de 1000 valeurs (graine 0). Les seuils utilisés figurent dans le
+  JSON
+- Dates en texte : liste fermée de 11 formats stricts en 8 groupes ; jour/mois
+  jamais tranchés par un ratio (compte des valeurs qui départagent) ; seules
+  les dates de 1677-09-21 à 2262-04-11 sont reconnues, pour un résultat
+  identique sous pandas 2 et 3
+- Nombres en texte : forme canonique stricte ; un entier à zéro initial est un
+  code, jamais un nombre ; format régional = `unknown` avec avertissement,
+  jamais converti
+- Surcharge manuelle au niveau de la fonction (`overrides` de `infer_types`) ;
+  `analyze` garde sa signature (la surcharge viendra avec l'objet de
+  configuration)
 
 ## Prochaine étape
 
-Après l'entretien du vendredi 25 septembre : **cadrer la Phase 3** avec toi
-avant de coder. Feuille de route (numérotation à confirmer ensemble) : le
-chargement CSV, prévu à l'origine en Phase 2, est repoussé.
+Cadrer la **Phase 4 (qualité)** avec toi avant de coder. Elle reprend les
+constantes, quasi-constantes et colonnes presque vides (sorties de la Phase 3),
+et devra consulter l'indice de rôle (par exemple ne jamais calculer la moyenne
+d'un identifiant). Feuille de route (numérotation à confirmer ensemble) : le
+chargement CSV, prévu à l'origine en Phase 2, reste repoussé ; les statistiques
+descriptives, les alertes et les graphiques sont à replacer lors du cadrage.
 
-**Phase 3** (à cadrer avec toi avant de coder) : inférence de types
-statistiques à partir du profil de base (constantes, colonnes presque vides,
-identifiants, booléens contenant `None`). Le chargement CSV, les statistiques
-descriptives, la qualité et les exports sont à replacer dans les phases
-suivantes lors de ce cadrage
+## Limites connues du rapport
 
-## Limites connues du rapport minimal
-
-- Pas d'inférence de types ni de rôles (un booléen contenant des nuls apparaît
-  en `text_or_object`)
 - Pas d'alertes de qualité, pas de statistiques univariées, pas de graphiques
 - API et format JSON provisoires (JSON non versionné)
 - Pas de chargement de fichiers : `analyze` n'accepte qu'un DataFrame
 - Valeur manquante = nul pandas uniquement (chaînes vides, `"N/A"` et
   sentinelles non comptées)
+
+## Limites connues de l'inférence de types
+
+- Formats de date non supportés (laissés au texte) : années à 2 chiffres, noms
+  de mois, formes compactes (`20240105`), fuseaux horaires, fractions de
+  seconde, heures sans secondes
+- Seules les dates de 1677 à 2262 sont reconnues : un sentinelle comme
+  `9999-12-31` compte comme non reconnu (il pèse dans la tolérance de 5 %)
+- Des codes numériques stockés en entiers ne se distinguent pas de vraies
+  mesures (une colonne d'entiers presque tous uniques est proposée comme
+  identifiant) : utiliser une surcharge
+- Une colonne de `"0"` et `"1"` en texte est typée `boolean`, et des
+  identifiants numériques en texte deviennent `numeric_discrete` avec le rôle
+  `identifier_candidate` (aucune conversion)
+- Les valeurs `Decimal` (ou tout objet non texte) donnent `unknown`
+  (`NON_TEXT_OBJECTS`)
+- Pas de catégories ordinales, pas de types sémantiques (e-mail, téléphone,
+  code postal), pas de distinction date/datetime
+- Les analyses de texte portent sur un échantillon de 1000 valeurs : une
+  minorité de valeurs à espaces peut échapper au test « identifiant »
+- Les seuils par défaut sont des heuristiques à valider sur de vrais datasets
 
 ## Limites connues
 
@@ -122,9 +171,15 @@ suivantes lors de ce cadrage
   3.x, `object` en 2.x) : `classify_dtype` les regroupe dans
   `text_or_object` ; ne jamais comparer des chaînes de dtype
 - Vérifier sous pandas 2 en local : `uv pip install "pandas<3"`, puis
-  `uv run --no-sync pytest`, puis `uv sync` pour rétablir l'environnement
-- Fait : `.claude/settings.local.json` a été retiré du suivi Git (PR #2) et
-  est ignoré par `.gitignore`
+  `uv run --no-sync pytest`, puis `uv sync` pour rétablir l'environnement.
+  Des tests épinglent l'échantillon déterministe et des `parse_ratio` exacts :
+  s'ils diffèrent entre pandas 2 et 3, s'arrêter et comprendre pourquoi
+- `Series.sample(random_state=0)` donne les mêmes valeurs sous pandas 2.3.3 et
+  3.0.6 ; mais `pd.to_datetime` n'accepte pas les mêmes années (ns sous
+  pandas 2, 1 à 9999 sous pandas 3) : d'où la garde de plage dans
+  `inference.py`
+- Fait : `.claude/settings.local.json` a été retiré du suivi Git et est
+  ignoré par `.gitignore`
 - Le test Arrow réel (`test_nested_arrow_dtype_gives_none_and_warning`) est
   ignoré partout où `pyarrow` est absent, CI comprise (`pyarrow` n'est pas une
   dépendance). Le test monkeypatch couvre la même branche. Pour le lancer :

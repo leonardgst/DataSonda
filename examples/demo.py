@@ -22,6 +22,8 @@ def build_demo_dataframe() -> pd.DataFrame:
     """Build the 500-row synthetic customers DataFrame (deterministic, seed 42)."""
     rng = random.Random(SEED)
     start = datetime(2023, 1, 1)
+    # 40 five-digit codes, the first nine starting with 0 (they must stay text).
+    zip_codes = [f"{code:05d}" for code in range(1000, 41000, 1000)]
 
     def maybe_missing(value: object, rate: float) -> object:
         return None if rng.random() < rate else value
@@ -50,6 +52,13 @@ def build_demo_dataframe() -> pd.DataFrame:
             "revenue_€": [
                 maybe_missing(round(rng.uniform(5, 500), 2), 0.10) for _ in range(N_ROWS)
             ],
+            "zip_code": [rng.choice(zip_codes) for _ in range(N_ROWS)],
+            "newsletter": [rng.choice(["yes", "no"]) for _ in range(N_ROWS)],
+            "last_login": [
+                (datetime(2024, 1, 1) + timedelta(days=rng.randint(0, 365))).strftime("%d/%m/%Y")
+                for _ in range(N_ROWS)
+            ],
+            "opt_in": [maybe_missing(rng.random() < 0.5, 0.05) for _ in range(N_ROWS)],
         }
     )
 
