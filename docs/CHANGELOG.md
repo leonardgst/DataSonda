@@ -5,6 +5,84 @@ significative, du plus récent au plus ancien. Ne pas détailler ici le
 "comment" (c'est dans le code et les commits) — se concentrer sur le
 "quoi" et le "pourquoi" des décisions.
 
+## Phase 3 — Inférence de types
+
+- **2026-09-21** — Chaque colonne reçoit une interprétation, distincte des
+  faits du profil : type statistique inféré, indice de rôle éventuel, raisons
+  (codes de règle + chiffres) et avertissements. Calculée par
+  `infer_types(df, profile)` (`inference.py`), intégrée à `analyze`
+  (`Report.inference`), au JSON (clé `type_inference`, avec les seuils
+  utilisés) et au HTML (colonnes « (inferred) »). Elle servira de base aux
+  phases suivantes : par exemple, ne jamais calculer la moyenne d'un
+  identifiant.
+  - **Changement de feuille de route :** les constantes, quasi-constantes et
+    colonnes presque vides, que l'ancien NEXT_STEPS plaçait ici, passent en
+    Phase 4 (qualité) : ce sont des observations de qualité, pas des types.
+  - Décision : fait contre interprétation. Le profil reste la vérité mesurée ;
+    l'inférence est une suggestion fondée sur des règles et des seuils
+    documentés (`InferenceThresholds`, sept seuils validés à la construction).
+    Jamais de devinette silencieuse : une ambiguïté produit un avertissement.
+    `unknown` est une réponse légitime. Aucune donnée n'est convertie ni
+    modifiée, et aucune valeur de cellule n'entre dans les résultats, le JSON
+    ou le HTML (les preuves sont des nombres ou des identifiants de
+    catalogues fermés).
+  - Décision : un identifiant garde un type (`numeric_discrete` ou `text`)
+    PLUS un indice de rôle (`identifier_candidate`, `code_candidate`) : les
+    phases futures devront consulter le rôle. Un flottant non entier n'est
+    jamais un identifiant.
+  - Alternative écartée : un score de confiance chiffré (fausse précision ;
+    des raisons chiffrées et des seuils documentés sont plus honnêtes).
+  - Alternative écartée : le profil seul comme source. Contre-exemple constaté :
+    deux faux positifs d'identifiant sur trois dans la démo ; il faut aussi
+    regarder les valeurs (entier ou non, espaces, échantillon).
+  - Décision : dates en texte, jamais devinées. Liste fermée de 11 formats
+    stricts en 8 groupes, testés avec `pd.to_datetime(format=...)`. Pour une
+    paire jour-d'abord / mois-d'abord, on compte les valeurs qui départagent ;
+    aucune décision par seuil de ratio. Alternatives écartées : l'inférence de
+    format de pandas (`dayfirst`, `format="mixed"`), et un seuil de ratio pour
+    l'ambiguïté (contre-exemple : 96 % de dates ambiguës et 4 % de jours > 12
+    font passer les deux formats au-dessus de 0,95). Ambigu = avertissement ;
+    mélange des deux orientations = `unknown` ; plusieurs groupes retenus =
+    `unknown`.
+  - Décision : seules les dates de la plage `datetime64[ns]` (1677-09-21 à
+    2262-04-11) sont reconnues. Fait constaté à la vérification : pandas 2 se
+    limite à cette plage, pandas 3 accepte les années 1 à 9999, ce qui aurait
+    donné des résultats différents (par exemple avec un sentinelle
+    `31/12/9999`). Alternative écartée : `datetime.strptime` (accepte les
+    chiffres Unicode, s'écarte de la décision initiale).
+  - Décision : nombres en texte. Forme canonique stricte sur la chaîne brute
+    (chiffres ASCII, sans strip). Un entier avec zéro initial est un CODE,
+    jamais un nombre, car la conversion perdrait les zéros. Les nombres au
+    format régional (virgule décimale, milliers avec espace ou virgule) donnent
+    `unknown` avec un avertissement : jamais convertis ni devinés (`1,234` est
+    ambigu). Alternative écartée : les convertir.
+  - Décision : reproductibilité. Analyses de texte sur les valeurs non nulles
+    ou sur un échantillon déterministe borné (`sample_size`, graine 0) ; avec
+    au plus deux valeurs distinctes, effectifs exacts sur toute la colonne.
+    L'échantillon et un `parse_ratio` sont épinglés par des tests, identiques
+    sous pandas 2.3.3 et 3.0.6.
+  - Décision : surcharge manuelle au niveau de la fonction (`overrides` de
+    `infer_types`), validée avant tout calcul ; le type imposé remplace le
+    résultat automatique (raison `USER_OVERRIDE`, avertissements conservés).
+    `analyze` garde sa signature : la surcharge viendra avec l'objet de
+    configuration. `__init__.py` n'exporte rien de plus.
+  - Décision : dans le rapport HTML, les colonnes inférées sont marquées
+    « (inferred) » et une phrase les distingue des faits mesurés ; les textes
+    « Limits » sur l'inférence n'apparaissent que si le rapport contient une
+    inférence.
+  - Hors périmètre volontaire : constantes et colonnes presque vides (Phase 4),
+    types sémantiques (e-mail, téléphone, code postal), catégories ordinales,
+    distinction date/datetime, timedelta, formats régionaux configurables,
+    conversion des données, détection de variable cible, statistiques, alertes,
+    graphiques, chargement CSV.
+  - Vérifié : 474 tests réussis et 3 ignorés (477 collectés) sous pandas 3.0.6
+    et sous pandas 2.3.3, ruff et mypy verts. Des mutations ciblées des seuils
+    et des règles ont été détectées par les tests (les mutants survivants
+    étaient équivalents). Le snippet du README et la démo ont été exécutés pour
+    de vrai. Mesure ponctuelle, sans promesse de performance : `infer_types`
+    prend environ 0,25 s pour 1 million de lignes et 6 colonnes sous pandas
+    3.0.6 (`profile_dataframe` : 1,27 s).
+
 ## Phase 2 bis — Rapport minimal (tranche verticale)
 
 - **2026-09-21** — `analyze(df)` renvoie un `Report` ; `report.export("x.html")`
