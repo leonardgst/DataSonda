@@ -51,8 +51,8 @@ class ColumnProfile:
     """Basic facts about the values of a single column.
 
     ``None`` means "not computable", never NaN or 0: ``missing_rate`` is ``None``
-    for an empty DataFrame, ``n_unique`` is ``None`` when values are unhashable
-    (see ``warnings``).
+    for an empty DataFrame, ``n_unique`` is ``None`` when values are unhashable or
+    of a type pandas cannot count (see ``warnings``).
     """
 
     name: str

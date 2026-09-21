@@ -11,6 +11,7 @@ from datasonde.models import ColumnProfile, DtypeFamily
 from datasonde.profile import profile_column, profile_dataframe
 
 UNHASHABLE = "n_unique not computed: unhashable values"
+UNSUPPORTED = "n_unique not computed: unsupported dtype"
 THREE_DATES = pd.to_datetime(["2020-01-01", "2020-01-02", "2020-01-01"])
 
 
@@ -96,6 +97,46 @@ def test_unhashable_values_give_none_and_warning(series: pd.Series) -> None:
     assert p.warnings == (UNHASHABLE,)
     assert p.n_rows == 2
     assert p.family is DtypeFamily.TEXT_OR_OBJECT
+
+
+def test_unhashable_message_is_not_the_unsupported_one() -> None:
+    p = profile_column("c", pd.Series([[1], [2]]))
+    assert p.warnings == (UNHASHABLE,)
+    assert UNSUPPORTED not in p.warnings
+
+
+def test_unsupported_dtype_gives_none_and_warning(monkeypatch: pytest.MonkeyPatch) -> None:
+    def not_implemented(*args: object, **kwargs: object) -> int:
+        raise NotImplementedError
+
+    monkeypatch.setattr(pd.Series, "nunique", not_implemented)
+    p = profile_column("c", pd.Series([1.0, None, 3.0]))
+    assert p.n_unique is None
+    assert p.warnings == (UNSUPPORTED,)
+    assert p.n_rows == 3
+    assert p.n_missing == 1
+    assert p.n_non_missing == 2
+    assert p.missing_rate == pytest.approx(1 / 3)
+    assert p.family is DtypeFamily.NUMERIC
+    json.dumps(p.to_dict(), allow_nan=False)
+
+
+@pytest.mark.parametrize("kind", ["list", "struct", "map"])
+def test_nested_arrow_dtype_gives_none_and_warning(kind: str) -> None:
+    # Skipped in CI (pyarrow is not a dependency); the monkeypatch test covers the branch.
+    pa = pytest.importorskip("pyarrow")
+    types_and_values = {
+        "list": (pa.list_(pa.int64()), [[1, 2], None, [3]]),
+        "struct": (pa.struct([("a", pa.int64())]), [{"a": 1}, None, {"a": 2}]),
+        "map": (pa.map_(pa.string(), pa.int64()), [[("k", 1)], None, [("j", 2)]]),
+    }
+    arrow_type, values = types_and_values[kind]
+    p = profile_column("c", pd.Series(values, dtype=pd.ArrowDtype(arrow_type)))
+    assert p.n_unique is None
+    assert p.warnings == (UNSUPPORTED,)
+    assert p.n_rows == 3
+    assert p.n_missing == 1
+    assert p.n_non_missing == 2
 
 
 def test_boolean_with_none_is_text_or_object() -> None:
