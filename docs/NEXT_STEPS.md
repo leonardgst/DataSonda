@@ -1,11 +1,13 @@
 # État du projet — DataSonda
 
-_Dernière mise à jour : 2026-09-18_
+_Dernière mise à jour : 2026-09-21_
 
 ## Phase en cours
 
-Phase 2 — Profil de base des colonnes (implémentée sur la branche
-`feat/phase-2-column-profile`, pas encore poussée ni mergée)
+Phase 2 — Profil de base des colonnes : mergée dans `main` (PR #3). Le seul
+travail en cours est un correctif post-revue (branche
+`fix/n-unique-unsupported-dtypes`) : `n_unique` ne fait plus planter le profil
+sur les types non supportés (colonnes Arrow imbriquées).
 
 ## Ce qui est fait
 
@@ -23,13 +25,17 @@ Phase 2 — Profil de base des colonnes (implémentée sur la branche
 - Phase 2 : `profile.py` (`classify_dtype`, `profile_column`,
   `profile_dataframe`), `DtypeFamily`, `ColumnProfile` et `DatasetProfile`
   dans `models.py` ; correctif de validation des noms de colonnes qui
-  entrent en collision après `str()`. 70 tests verts sous pandas 3 et pandas 2
-  (détails dans le CHANGELOG)
+  entrent en collision après `str()` (détails dans le CHANGELOG)
+- Correctif post-revue : `profile_column` distingue les valeurs non hachables
+  (`"n_unique not computed: unhashable values"`) des types non supportés
+  (`"n_unique not computed: unsupported dtype"`). Suite locale : 75 tests
+  collectés, dont 3 ignorés sans `pyarrow` (72 exécutés) ; les 75 passent
+  avec `pyarrow` installé temporairement, sous pandas 3 et pandas 2
 
 ## En cours / à vérifier
 
-- Pousser la branche `feat/phase-2-column-profile`, ouvrir la PR et confirmer
-  que la CI est verte (matrice Python 3.11/3.12/3.13 + étape pandas 2.x)
+- Confirmer que la CI est verte sur la PR de ce correctif (matrice
+  3.11/3.12/3.13 + étape pandas 2.x)
 
 ## Décisions actées
 
@@ -44,7 +50,7 @@ Phase 2 — Profil de base des colonnes (implémentée sur la branche
 - Familles de dtype : `numeric`, `boolean`, `datetime`, `categorical`,
   `text_or_object`, `other` (complexes, timedelta, période, intervalle)
 - Valeur manquante = `isna()` pandas uniquement ; « non calculable » = `None`
-  (jamais NaN ni 0)
+  (jamais NaN ni 0), avec un avertissement, sans jamais faire planter le profil
 - Aucune façade publique dans `__init__.py` avant l'existence de `analyze`
 
 ## Prochaine étape
@@ -58,6 +64,19 @@ identifiants, booléens contenant `None`). Le chargement CSV, les statistiques
 descriptives, la qualité et les exports sont à replacer dans les phases
 suivantes lors de ce cadrage
 
+## Limites connues
+
+- `dictionary[pyarrow]` (équivalent Arrow de `category`) est classé `other`
+  par `classify_dtype`. À reprendre avec le chargement Parquet. Les autres
+  dtypes Arrow courants (`int64`, `double`, `bool`, `timestamp`, `date32`,
+  `decimal128`) sont classés correctement.
+- Un label de colonne `None` est converti en `NaN` par pandas 3 (nom `"nan"`)
+  mais conservé par pandas 2 (nom `"None"`). Cas exotique sans gravité ; la
+  validation reste cohérente avec les labels réels.
+- Les colonnes MultiIndex fonctionnent, mais leurs noms sont la
+  représentation texte des tuples (ex. `"('a', 'x')"`). Support non garanti,
+  hors périmètre.
+
 ## Pièges connus / notes pour reprise
 
 - mypy : ne pas figer `python_version` dans `[tool.mypy]`. Sur Python ≥ 3.12,
@@ -70,8 +89,13 @@ suivantes lors de ce cadrage
   `text_or_object` ; ne jamais comparer des chaînes de dtype
 - Vérifier sous pandas 2 en local : `uv pip install "pandas<3"`, puis
   `uv run --no-sync pytest`, puis `uv sync` pour rétablir l'environnement
-- `.claude/settings.local.json` est suivi par Git alors que c'est un
-  réglage local : à décider (le retirer de l'index et l'ignorer ?)
+- Fait : `.claude/settings.local.json` a été retiré du suivi Git (PR #2) et
+  est ignoré par `.gitignore`
+- Le test Arrow réel (`test_nested_arrow_dtype_gives_none_and_warning`) est
+  ignoré partout où `pyarrow` est absent, CI comprise (`pyarrow` n'est pas une
+  dépendance). Le test monkeypatch couvre la même branche. Pour le lancer :
+  `uv pip install pyarrow`, `uv run --no-sync pytest tests/test_profile.py`,
+  puis `uv sync`
 - PowerShell 5.1 : toujours utiliser `[System.IO.File]::WriteAllText` avec
   `UTF8Encoding($false)` pour écrire des fichiers texte (jamais
   `Set-Content -Encoding utf8`, qui ajoute un BOM)

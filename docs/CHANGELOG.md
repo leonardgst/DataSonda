@@ -5,6 +5,21 @@ significative, du plus récent au plus ancien. Ne pas détailler ici le
 "comment" (c'est dans le code et les commits) — se concentrer sur le
 "quoi" et le "pourquoi" des décisions.
 
+## Correctif post-revue de la Phase 2
+
+- **2026-09-21** — Une colonne Arrow imbriquée (`list`, `struct`, `map`) faisait
+  planter tout le profil : `nunique()` lève alors `ArrowNotImplementedError`,
+  qui hérite de `NotImplementedError` et non de `TypeError`. Cela contredisait
+  la règle « non calculable = `None`, jamais de plantage ».
+  - Décision : deux clauses `except` et deux messages distincts,
+    `"n_unique not computed: unhashable values"` (inchangé) et
+    `"n_unique not computed: unsupported dtype"` ; les autres champs restent
+    calculés. Alternatives écartées : `except Exception` (masquerait de vrais
+    bugs) et un message unique générique (moins précis).
+  - Vérifié sous pandas 3.0.6 et 2.3.3 avec un vrai `pyarrow`, installé
+    temporairement. `pyarrow` n'est pas une dépendance : le test Arrow réel est
+    ignoré en CI, le test monkeypatch couvre la branche.
+
 ## Phase 2 — Profil de base des colonnes
 
 - **2026-09-18** — Pour chaque colonne : famille de dtype, nombre de lignes,
